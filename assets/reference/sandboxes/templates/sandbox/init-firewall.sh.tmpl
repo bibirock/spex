@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# 沙盒 egress 防火牆：default-deny + 網域白名單（改編自 anthropics/claude-code 官方參考容器）。
+# 由 {{ID}} Sandbox Profile 生成（.claude/reference/sandboxes/{{ID}}.md）。
+# 冪等：每次執行全量重建規則；claude.sh / dispatch.sh 每次啟動都重跑以刷新網域 IP。
+# DNS 只走 Docker 內建 resolver（127.0.0.11，經 lo）→ 其他 resolver（如 dig @8.8.8.8）一律被擋，
+# 緩解 DNS tunneling（claude-code#36907）；殘餘風險與取捨見 .claude/rules/sandbox.md。
+set -euo pipefail
+
+# 白名單網域：Claude Code 推論/登入 + {{PACKAGE_MANAGER}} registry + 已啟用的選填開關。要放行新網域改
+# Sandbox Profile 的 firewallStackDomains / firewallOptionalToggles，不要手改本檔（單一來源見協定文件）。
+ALLOWED_DOMAINS=(
+{{FIREWALL_DOMAINS_BASH}}
+)
+
+# 全量清除既有規則（冪等）
+iptables -P OUTPUT ACCEPT
+iptables -P INPUT ACCEPT
+iptables -F OUTPUT
+iptables -F INPUT
+ipset destroy allowed-domains 2>/dev/null || true
+ipset create allowed-domains hash:net
+
+# 解析網域 → ipset（走容器預設 resolver = Docker 內建 DNS）
+for domain in "${ALLOWED_DOMAINS[@]}"; do
+  ips="$(dig +short A "$domain" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+  if [ -z "$ips" ]; then
+    echo "WARN: $domain 解析不到 A record，略過" >&2
+    continue
+  fi
+  while IFS= read -r ip; do
+    ipset add allowed-domains "$ip" -exist
+  done <<<"$ips"
+done
+
+# compose 內部子網（sidecar 服務）
+SUBNET="$(ip -o -4 addr show dev eth0 | awk '{print $4}')"
+
+# INPUT：放行 lo、既有連線、compose 內部
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -s "$SUBNET" -j ACCEPT
+iptables -P INPUT DROP
+
+# OUTPUT：lo（含 127.0.0.11 DNS）、既有連線、compose 內部、白名單 443；其餘（含任意外部 53）全擋
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -d "$SUBNET" -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 443 -m set --match-set allowed-domains dst -j ACCEPT
+iptables -P OUTPUT DROP
+
+# IPv6 全鎖（compose 網路未啟 v6；防繞道）
+if command -v ip6tables >/dev/null 2>&1; then
+  ip6tables -P OUTPUT DROP 2>/dev/null || true
+  ip6tables -F OUTPUT 2>/dev/null || true
+  ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true
+fi
+
+# 自我驗證：example.com 必須不通、api.anthropic.com 必須通
+if timeout 3 bash -c 'exec 3<>/dev/tcp/example.com/443' 2>/dev/null; then
+  echo 'FAIL: 防火牆未生效（example.com 可達）' >&2
+  exit 1
+fi
+if ! timeout 5 bash -c 'exec 3<>/dev/tcp/api.anthropic.com/443' 2>/dev/null; then
+  echo 'FAIL: 白名單未生效（api.anthropic.com 不可達）' >&2
+  exit 1
+fi
+echo "sandbox firewall OK（allow: ${ALLOWED_DOMAINS[*]}）"

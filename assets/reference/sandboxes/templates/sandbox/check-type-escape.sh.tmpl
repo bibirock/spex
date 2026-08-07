@@ -1,0 +1,21 @@
+{{#SKIP_IF_NOT HAS_TYPE_ESCAPE_CHECK}}
+#!/usr/bin/env bash
+# 型別逃生口確定性閘門（--verify 內一環）。
+# 由 {{ID}} Sandbox Profile 生成。檢查內容**完全來自 profile 的 typeEscapeHatchCheck**，
+# 本檔不對任何語言的型別系統做假設（TS 的裸 any、Python 的 type: ignore、Go 的 interface{}…
+# 各語言判準不同，寫死其中一種等於讓其他語言拿到一支對它無效的閘門）。
+#
+# 契約：typeEscapeHatchCheck.command 必須「命中逃生口時以非零 exit 結束」（linter 語義）。
+# 以 grep 實作時要反轉退出碼，例如：
+#   ! grep -rnE '<pattern>' <dirs> --include='<glob>'
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel 2>/dev/null || echo /workspace)"
+
+# 指令原樣執行、不外加否定（外加會與 `! grep …` 這種已自帶否定的寫法疊成 `! !`，bash 語法錯誤）。
+if {{TYPE_ESCAPE_CHECK_COMMAND}}; then
+  echo '✓ type-escape gate 通過（{{TYPE_ESCAPE_CHECK_DESCRIPTION}}）'
+else
+  echo '❌ 型別逃生口閘門 FAIL（{{TYPE_ESCAPE_CHECK_DESCRIPTION}}）' >&2
+  echo '   判準與修法見 Sandbox Profile 的 typeEscapeHatchCheck 與專案 conventions 規則。' >&2
+  exit 1
+fi

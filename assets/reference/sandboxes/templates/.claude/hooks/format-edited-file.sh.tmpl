@@ -1,0 +1,21 @@
+{{#SKIP_IF_NOT HAS_POST_EDIT_FORMATTER}}
+#!/usr/bin/env bash
+# Claude Code PostToolUse hook（由 {{ID}} Sandbox Profile 生成）
+# 作用：Claude 透過 Edit / Write / MultiEdit 異動檔案後，對「剛異動的那一個檔」跑格式化工具。
+# 設計：只格式化單檔、非阻塞、安靜——不影響 Claude 的工作流程。
+set -euo pipefail
+
+# hook 事件以 JSON 從 stdin 傳入；jq 優先（host 有）；缺 jq → node fallback（沙盒容器無 jq、有 node）。
+_hook_input="$(cat)"
+file_path="$(printf '%s' "$_hook_input" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)"
+if [ -z "$file_path" ]; then
+  file_path="$(printf '%s' "$_hook_input" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(((JSON.parse(s).tool_input)||{}).file_path||"")}catch(e){}})' 2>/dev/null || true)"
+fi
+
+[ -n "$file_path" ] || exit 0
+[ -f "$file_path" ] || exit 0
+
+formatter_cmd="${CLAUDE_PROJECT_DIR:-.}/{{POST_EDIT_FORMATTER_COMMAND}}"
+# 未安裝該格式化工具、或格式化失敗（如檔案暫時語法錯誤）皆不擋流程；shellcheck disable=SC2086
+# 因需要讓 formatter_cmd 的空白分隔的旗標各自成獨立 argv。
+$formatter_cmd "$file_path" >/dev/null 2>&1 || true

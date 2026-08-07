@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# spex 章戳硬閘（Claude Code PreToolUse hook，exit 2 = 擋下該次工具呼叫）。
+#
+# 由 harness 執行，不在模型控制範圍內——這是非沙盒平面「驗章不可跳過」的機制來源：
+#   1. tracker 寫入類 MCP 呼叫，內容若含章戳宣稱（challenge：PASS（…章 X）／驗收章 X），
+#      發文前強制對本 session 的事件流跑 challenge-audit；未過一律拒發。
+#      無宣稱的留言免驗放行（plan 留言、批次分支留言等）。
+#   2. 任何 Write / Edit / Bash 觸及 ~/.claude/projects/（章源所在）一律擋下——
+#      章的可信度建立在「事件流由 harness 寫、執行者不改」，能改就沒有章可言。
+#
+# 已知邊界（誠實標註，與 rules/sdd-workflow.md「章的強度分層」一致）：Bash 比對是字面解析，
+# 對 compound / wrapper / 變數內插變體不完備；沙盒平面的「容器物理寫不到」才是更硬的邊界。
+set -u
+
+input="$(cat)"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "spex 章戳硬閘：缺少 $1，無法驗章。請安裝後重試（或有意識地移除本 hook，屬防護降級須留痕）。" >&2; exit 2; }; }
+need jq
+
+tool_name="$(jq -r '.tool_name // empty' <<<"$input" 2>/dev/null || true)"
+[ -n "$tool_name" ] || exit 0
+
+# ── (2) 章源保護：事件流不可被執行者改寫 ────────────────────────────────
+TRANSCRIPT_MARK='/.claude/projects/'
+case "$tool_name" in
+  Write | Edit | MultiEdit)
+    fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
+    case "$fp" in
+      *"$TRANSCRIPT_MARK"*)
+        echo "spex 章戳硬閘：禁止改寫 ${fp}——~/.claude/projects/ 是章戳鏈的事件流（章源），由 harness 寫入；可改寫即無章可信。" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  Bash)
+    cmd="$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null || true)"
+    case "$cmd" in
+      *"$TRANSCRIPT_MARK"*)
+        # 唯讀查看（cat/grep/head/tail/ls/wc/python3 讀檔）不阻擋，避免誤傷 spex-stamp 自己的驗章流程
+        case "$cmd" in
+          cat\ * | grep\ * | rg\ * | head\ * | tail\ * | ls\ * | wc\ * | node\ * | python3\ * | jq\ *) ;;
+          *)
+            echo "spex 章戳硬閘：禁止以 Bash 改寫 ~/.claude/projects/ 內容（章戳鏈事件流）。唯讀查詢請用 cat / grep / node / python3。" >&2
+            exit 2
+            ;;
+        esac
+        ;;
+    esac
+    exit 0
+    ;;
+esac
+
+# ── (1) tracker 寫入的章戳驗證 ──────────────────────────────────────────
+case "$tool_name" in
+  mcp__*add_comment* | mcp__*create_work_item* | mcp__*update_work_item* | mcp__*create_issue* | mcp__*add_issue_comment*) ;;
+  *) exit 0 ;;
+esac
+
+body="$(jq -r '[.tool_input.comment?, .tool_input.body?, .tool_input.text?, .tool_input.content?] | map(select(. != null)) | join("\n")' <<<"$input" 2>/dev/null || true)"
+[ -n "$body" ] || exit 0
+grep -qE 'challenge[：:][[:space:]]*PASS|驗收章' <<<"$body" || exit 0
+
+transcript="$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null || true)"
+if [ -z "$transcript" ] || [ ! -f "$transcript" ]; then
+  echo "spex 章戳硬閘：留言含章戳宣稱，但取不到本 session 事件流（transcript_path 缺失或不存在），無法驗章 → 拒發。" >&2
+  exit 2
+fi
+
+repo="${CLAUDE_PROJECT_DIR:-$(jq -r '.cwd // empty' <<<"$input")}"
+scripts="$repo/.claude/reference/spex/scripts"
+[ -f "$scripts/challenge-audit.py" ] || { echo "spex 章戳硬閘：找不到 $scripts/challenge-audit.py，無法驗章 → 拒發。請重新執行 spex init。" >&2; exit 2; }
+need node
+need python3
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+printf '%s' "$body" >"$tmp/pending.md"
+
+if ! node "$scripts/transcript-to-stream.mjs" "$transcript" --pending "$tmp/pending.md" >"$tmp/stream.ndjson" 2>"$tmp/err"; then
+  echo "spex 章戳硬閘：事件流正規化失敗 → 拒發。$(head -c 400 "$tmp/err")" >&2
+  exit 2
+fi
+
+if ! out="$(cd "$repo" && python3 "$scripts/challenge-audit.py" "$tmp/stream.ndjson" 2>&1)"; then
+  echo "spex 章戳硬閘：驗章未通過，拒絕寫入 tracker。" >&2
+  echo "$out" >&2
+  exit 2
+fi
+
+exit 0

@@ -1,0 +1,48 @@
+{
+  "_comment": "由 {{ID}} Sandbox Profile 生成的參考片段（非最終設定檔）。請將下列 hooks 條目手動合併進專案既有的 .claude/settings.json（若尚無 settings.json 則可整份採用，並移除本 _comment 欄位）——render-profile.mjs 不自動深層合併 JSON，以免覆蓋專案既有設定。",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/sandbox-guard.sh\"",
+            "statusMessage": "沙盒平面守門…"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/sandbox-guard.sh\"",
+            "statusMessage": "沙盒平面守門…"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+{{#IF HAS_POST_EDIT_FORMATTER}}
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/format-edited-file.sh\""
+          }{{#IF HAS_POST_EDIT_LINTER}},{{/IF}}
+{{/IF}}
+{{#IF HAS_POST_EDIT_LINTER}}
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/lint-edited-file.sh\"",
+            "timeout": 60,
+            "statusMessage": "Lint 檢查異動檔…"
+          }
+{{/IF}}
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+# 沙盒編排（程式碼平面）：與 dev/prod compose 完全獨立（獨立 project name / network / volumes）。
+# 由 {{ID}} Sandbox Profile 生成（.claude/reference/sandboxes/{{ID}}.md）；不依賴 host .env 做變數展開。
+name: "{{ID}}-sandbox"
+
+services:
+  sandbox:
+    build:
+      context: .
+    init: true
+    command: sleep infinity
+    cap_add:
+      - NET_ADMIN # init-firewall.sh 需要
+      - NET_RAW
+    environment:
+      IN_SANDBOX: '1' # sandbox-guard.sh 環境感知分流依據
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' # 減少必要 egress 網域
+      DISABLE_AUTOUPDATER: '1'
+{{SIDECAR_ENV_BLOCK}}
+    volumes:
+      - ..:/workspace
+      # file-over-file：蓋掉 host .env（可能含真實 secrets），沙盒只見 dummy 值
+      - ./.env.sandbox:/workspace/.env:ro
+      # file-over-file：蓋掉 repo .mcp.json——沙盒零 MCP
+      - ./mcp.sandbox.json:/workspace/.mcp.json:ro
+      - claude_config:{{NON_ROOT_HOME}}/.claude # 訂閱登入 token 持久化
+{{DEPS_CACHE_VOLUME_MOUNTS}}
+{{ADDITIONAL_TARGETS_COMPOSE_VOLUMES}}
+{{#IF HAS_SIDECAR}}
+    depends_on:
+{{DEPENDS_ON_BLOCK}}
+{{/IF}}
+    networks:
+      - sandboxnet
+
+{{#IF HAS_SIDECAR}}
+{{SIDECAR_SERVICES_BLOCK}}
+{{/IF}}
+
+networks:
+  sandboxnet:
+    driver: bridge
+
+volumes:
+{{TOP_LEVEL_VOLUMES}}

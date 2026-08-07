@@ -1,0 +1,42 @@
+# 沙盒容器（程式碼平面）：Claude Code 在此編輯檔案與執行驗證束/E2E。
+# 內含零 git/ADO 憑證；egress 由 init-firewall.sh 白名單管制（見 .claude/rules/sandbox.md）。
+# 由 {{ID}} Sandbox Profile 生成（.claude/reference/sandboxes/{{ID}}.md）。
+
+{{#IF NEEDS_NODE_INSTALL}}
+# 此 profile 的 baseImage 非 Node 生態系，但 Claude Code CLI 本身仍需要 Node/npm 才能安裝與執行
+# （沙盒側工具語言與目標專案語言無關，見 README.md 附註）。以 multi-stage 從官方 Node 映像複製
+# 執行檔，不透過 curl/wget 抓安裝腳本——沙盒刻意不裝 curl/wget（見下方「MCP-only 繞過指令家族」），
+# 這裡不能為了裝 Node 而破例。
+FROM node:24-bookworm-slim AS node-source
+{{/IF}}
+
+FROM {{BASE_IMAGE}}
+
+# iptables/ipset/dnsutils：egress 防火牆；git：沙盒內唯讀查 diff/log；procps/sudo：最小維運面。
+# 刻意不裝 curl / wget（MCP-only 繞過指令家族，見 sdd-workflow.md）。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash ca-certificates dnsutils git iproute2 ipset iptables procps sudo {{EXTRA_OS_PACKAGES}} \
+  && rm -rf /var/lib/apt/lists/*
+
+{{#IF NEEDS_NODE_INSTALL}}
+COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+  && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+{{/IF}}
+
+RUN npm install -g @anthropic-ai/claude-code
+
+# 防火牆腳本：{{NON_ROOT_USER}} user 僅能以 sudo 執行這一支（仿官方參考容器的最小 sudo 面）
+COPY init-firewall.sh /usr/local/bin/init-firewall.sh
+RUN chmod +x /usr/local/bin/init-firewall.sh \
+  && echo '{{NON_ROOT_USER}} ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh' > /etc/sudoers.d/{{NON_ROOT_USER}}-firewall \
+  && chmod 0440 /etc/sudoers.d/{{NON_ROOT_USER}}-firewall
+
+# named volume 掛載點先建好並交給 {{NON_ROOT_USER}}，首次掛載才會繼承正確 ownership
+RUN mkdir -p {{NON_ROOT_HOME}}/.claude /workspace \
+  && chown -R {{NON_ROOT_USER}}:{{NON_ROOT_USER}} {{NON_ROOT_HOME}}/.claude /workspace
+
+# --dangerously-skip-permissions 需非 root（CLI 強制）
+USER {{NON_ROOT_USER}}
+WORKDIR /workspace

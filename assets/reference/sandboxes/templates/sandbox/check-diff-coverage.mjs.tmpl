@@ -1,0 +1,103 @@
+#!/usr/bin/env node
+// 變動行覆蓋率閘門（確定性檢查，由 dispatch.sh --diff-cov 於沙盒內執行）。
+// 由 {{ID}} Sandbox Profile 生成（.claude/reference/sandboxes/{{ID}}.md）。
+// 語意：只驗「本次 diff 新增/變更行」的行覆蓋率 ≥ THRESHOLD——避免對含 legacy 未覆蓋代碼的檔案
+// 逼出範圍外補測。資料來源：{{DIFF_COV_LCOV_PATH}} 的 DA 記錄。變動行：git diff -U0 HEAD。
+// 前置：先跑過 dispatch.sh --verify。
+import { readFileSync, statSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+
+const THRESHOLD = {{DIFF_COV_THRESHOLD}};
+const LCOV = '{{DIFF_COV_LCOV_PATH}}';
+// 排除規則來自 Sandbox Profile 的 diffCoverage.fileExemptionRules——渲染器不對任何特定框架
+// 做特殊判斷，排除哪些檔案與理由完全由 profile 宣告。
+const EXEMPTION_RULES = {{DIFF_COV_EXEMPTIONS_JS}};
+
+const files = process.argv.slice(2);
+if (files.length === 0) {
+  console.log('diff-cov: 無變動源碼檔，跳過');
+  process.exit(0);
+}
+
+let lcovRaw;
+try {
+  lcovRaw = readFileSync(LCOV, 'utf8');
+} catch {
+  console.error(`diff-cov FAIL: 找不到 ${LCOV}——先執行 dispatch.sh --verify`);
+  process.exit(1);
+}
+console.log(`diff-cov: 使用 ${LCOV}（mtime ${statSync(LCOV).mtime.toISOString()}）`);
+
+// 解析 lcov：SF → { line → hits }
+const lineHits = new Map();
+let current = null;
+for (const line of lcovRaw.split('\n')) {
+  if (line.startsWith('SF:')) {
+    current = line.slice(3).trim();
+    lineHits.set(current, new Map());
+  } else if (line.startsWith('DA:') && current) {
+    const [ln, hits] = line.slice(3).split(',').map(Number);
+    lineHits.get(current).set(ln, hits);
+  } else if (line === 'end_of_record') {
+    current = null;
+  }
+}
+const lcovKeys = [...lineHits.keys()];
+
+function changedLines(file) {
+  const out = execSync(`git diff -U0 HEAD -- "${file}"`, { encoding: 'utf8' });
+  const lines = new Set();
+  for (const m of out.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
+    const start = Number(m[1]);
+    const count = m[2] === undefined ? 1 : Number(m[2]);
+    for (let i = 0; i < count; i += 1) lines.add(start + i);
+  }
+  return lines;
+}
+
+let failed = 0;
+for (const f of files) {
+  const exemption = EXEMPTION_RULES.find((r) => new RegExp(r.pattern).test(f));
+  if (exemption) {
+    console.log(`diff-cov SKIP ${f}（${exemption.reason}）`);
+    continue;
+  }
+  const key = lcovKeys.find((k) => k.endsWith(`/${f}`) || k === f);
+  if (!key) {
+    console.error(`diff-cov FAIL ${f}: lcov 無此檔資料（未被任何測試觸及）`);
+    failed += 1;
+    continue;
+  }
+  const changed = changedLines(f);
+  if (changed.size === 0) {
+    console.log(`diff-cov PASS ${f}（本輪無新增/變更行）`);
+    continue;
+  }
+  const da = lineHits.get(key);
+  let total = 0;
+  let covered = 0;
+  const missed = [];
+  for (const ln of changed) {
+    if (!da.has(ln)) continue; // 非可執行行（空行 / 型別宣告 / 註解）
+    total += 1;
+    if (da.get(ln) > 0) covered += 1;
+    else missed.push(ln);
+  }
+  if (total === 0) {
+    console.log(`diff-cov PASS ${f}（變更行無可執行行）`);
+    continue;
+  }
+  const pct = (covered / total) * 100;
+  if (pct < THRESHOLD) {
+    missed.sort((a, b) => a - b);
+    console.error(
+      `diff-cov FAIL ${f}: 變更行覆蓋 ${pct.toFixed(1)}%（${covered}/${total} < ${THRESHOLD}%）；未覆蓋行: ${missed.slice(0, 15).join(',')}`,
+    );
+    failed += 1;
+  } else {
+    console.log(
+      `diff-cov PASS ${f}: 變更行覆蓋 ${pct.toFixed(1)}%（${covered}/${total}）`,
+    );
+  }
+}
+process.exit(failed > 0 ? 1 : 0);

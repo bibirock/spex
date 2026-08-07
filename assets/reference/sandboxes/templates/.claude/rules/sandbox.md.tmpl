@@ -1,0 +1,50 @@
+# 沙盒執行模式（雙平面：碼在沙盒、權在 host）
+
+> 基建：`sandbox/`、`.devcontainer/`、`.claude/hooks/sandbox-guard.sh`
+> 由 {{ID}} Sandbox Profile 生成（.claude/reference/sandboxes/{{ID}}.md）。
+
+## 核心命題
+
+把「讀碼探索 + 寫 code + 執行 code」全程關進零憑證的 Docker 沙盒；憑證與外部整合（git commit/push、tracker、PR）留在 host。不受信任內容觸發的一切分析與執行都在沙盒內，沙盒無憑證可洩、且防火牆之外的網路一律不通。
+
+## 平面邊界表
+
+| 動作                                      | host（權限平面） | 沙盒（程式碼平面） |
+| ----------------------------------------- | ----------------- | ------------------- |
+| git branch / push / commit               | ✅                | ❌（guard 硬擋，且無憑證） |
+| 編輯源碼（src / test / …）                | ❌（guard 硬擋）  | ✅                  |
+| 套件管理器安裝 / lint / build / test     | ❌（guard 硬擋）  | ✅（sidecar 就緒）  |
+| 編輯 `.claude/**`、`sandbox/**`、`.devcontainer/**` | ✅（治理檔例外） | ✅ |
+| az / gh / curl / wget                     | 依 MCP-only deny  | ❌（guard 硬擋 + 未安裝） |
+
+## dispatch 協定
+
+`sandbox/dispatch.sh <prompt-file>`：對常駐容器跑 `claude -p --dangerously-skip-permissions`，結果落 `sandbox/tasks/<id>.result.md`。
+
+專用模式：`--explore <prompt-file>`（唯讀探索）、`--verify`（驗證束）、`--diff-cov <檔...>`（變動檔覆蓋率閘門）、{{#IF HAS_E2E}}`--e2e`（E2E）、{{/IF}}`--run <script>`（確定性修補 / 檢查腳本）、`--bootstrap`（安裝依賴）{{#IF HAS_RESET_DB}}、`--reset-db`（DB 重置）{{/IF}}。
+
+`sandbox/tasks/` 已入 `.gitignore`，prompt / result 不進版控。
+
+## 硬防護機制
+
+`.claude/hooks/sandbox-guard.sh`（PreToolUse，exit 2）環境感知雙向硬擋，同一份 hook 兩側通用；hook 不受 bypassPermissions 影響。網路層：`init-firewall.sh` default-deny egress + 網域白名單，DNS 只走 Docker 內建 resolver。憑證層：`sandbox/.env.sandbox` file-over-file 蓋掉 host `.env`。
+
+{{#IF SDD_SKILL_GUARD}}
+本專案採用完整 SDD 工作流（spex 系列 skill）：`spex-plan`／`spex-fixbug`／`spex-task`／`spex-implement`／`spex-selfcheck`／`spex-challenge` 六個 skill 一律禁止 host 直接載入，須整階段打包為自足 prompt 經 `sandbox/dispatch.sh` 派工，由沙盒內的 claude 自己載入執行；host 也禁止直接以 Agent 工具派發 `challenger`／`verifier`（章戳鏈的影子流只在沙盒 dispatch 路徑下才有效，見 `dispatch-watchdog-host.sh`）。
+
+**例外：`spex-stamp` 是 host 端 skill**——驗章者必須在權限平面讀影子流（`$SHADOW_DIR/tools/challenge-audit.py` 的 host-only 副本），不受上述封鎖，也不得改由沙盒內執行。
+{{/IF}}
+
+{{#IF TRACKER_CARD_GUARD}}
+**程式注入硬閘**：host 對 `sandbox/tasks/<id>[-phase].prompt.md` 執行 Write/Edit/MultiEdit 時，強制核對 `sandbox/tasks/<id>.card.md`（`{{TRACKER_ADAPTER_ID}}-relay.py render <id>` 的決定性輸出）是否逐字出現在寫入內容中——目的是把「卡片內容禁止手改／改寫／摘要」從協定紀律焦進工具層，防止 LLM 轉譯時掉字走樣。
+{{/IF}}
+
+## 已知取捨
+
+- **guard 的 Bash 檢查是字面解析**：對 wrapper / 內插變體不完備（中層防護）；網路與憑證隔離才是硬底線。
+- **Docker 非硬安全邊界**（共享 kernel）：更高保證需 microVM，另案。
+- **DNS tunneling 僅緩解未根治**：根治需 L7 proxy，另案演進。
+
+## 降級留痕
+
+移除 guard hook、放寬防火牆白名單、把真值寫進 `.env.sandbox`，皆屬有意識的防護降級，須在當次任務鏈留痕。

@@ -1,0 +1,15 @@
+<!--
+由 {{ID}} Sandbox Profile 生成的參考片段（非完整檔案）。請把以下內容合併進專案的
+.claude/rules/commands.md（若該檔案已存在其他內容，只需替換/新增「驗證指令束」段落，
+不要整檔覆蓋）——render-profile.mjs 不自動改寫既有規則檔，以免破壞既有內容。
+此片段與 sandbox/dispatch.sh 的 --verify 分支引用同一份 Sandbox Profile 的 verifyBundle，
+兩者不會各自漂移（見 .claude/reference/sandboxes/README.md「verifyBundle 與 commandsRuleDocSync」）。
+-->
+
+**驗證指令束（SDD 流程引用）：** `sandbox/dispatch.sh --verify`（沙盒內執行 `{{VERIFY_BUNDLE_CHAIN}}`；exit code 透傳）
+
+**唯讀驗證指令束（selfcheck / 獨立驗證者 / CI 引用）：** 同上 `--verify`（本身即唯讀束）。
+
+**唯讀探索：** `sandbox/dispatch.sh --explore <prompt-file>`（沙盒內唯讀讀碼 / 分析，回精簡摘要，不寫檔）。
+
+**diff-cov 語意：** 只驗「本次 diff 新增/變更行」的行覆蓋率 ≥{{DIFF_COV_THRESHOLD}}%（lcov 行級）——非全檔覆蓋率。

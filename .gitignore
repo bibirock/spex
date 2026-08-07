@@ -1,0 +1,11 @@
+node_modules/
+*.log
+.DS_Store
+
+# dist/ 由 npm install 觸發 prepare 腳本自動編譯，不進 git
+dist/
+
+# assets 由 scripts/sync-assets.mjs 從來源專案同步而來
+# 提交時可保留（讓使用者 git clone 後直接 build 不需要本地來源）
+# 若想嚴格與來源 repo 解耦則取消下行註解
+# assets/

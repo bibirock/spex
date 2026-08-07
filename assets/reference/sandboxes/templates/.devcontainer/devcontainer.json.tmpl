@@ -1,0 +1,14 @@
+{
+  "name": "{{ID}}-sandbox",
+  "dockerComposeFile": ["../sandbox/docker-compose.sandbox.yml"],
+  "service": "sandbox",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "{{NON_ROOT_USER}}",
+  "overrideCommand": false,
+  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["anthropic.claude-code"]
+    }
+  }
+}
