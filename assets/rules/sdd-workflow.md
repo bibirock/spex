@@ -209,16 +209,37 @@ PR 合併前必須 100% 通過：
 
 ## PR 開立控管
 
-1. **唯一入口**：`TRACKER.createPullRequest` 只允許由 `spex-pull-request` skill 的 Phase 4 呼叫；implement / schedule / 其他任何流程一律禁止直接開 PR。schedule 批次結束時的 PR 由 schedule **呼叫** `spex-pull-request`（批次最終模式）開立——`createPullRequest` 仍由 pull-request 呼叫，唯一入口不變；schedule 自身仍禁止直接呼叫。
-2. **前置條件**：最新一筆 Verify 留言為 PASS（`spex-selfcheck` 獨立驗收）；PASS 後分支有新 commit → 須重新驗收。
-3. **禁止 autoComplete**：`autoComplete` 一律 `false`；合併與工作項目完成由人類 reviewer 於平台 UI 操作。
-4. **開立前查核**：檢查同分支 active PR；發現非本流程開立的 PR → 告警停止，交人工處置。
-5. **人為介入點（雙路徑）**：
-   - **互動確認（預設）**：展示完整 PR 內容（title / description / work items / reviewers），等使用者明確輸入「確認」/「ok」/「yes」。
-   - **預授權**：使用者輸入含「**授權本次全自動開立 PR**」的明確語句（記錄原文 + 時間戳），僅該次任務鏈有效、不跨對話；模糊回覆（「都可以」「你決定」）不構成預授權；AI 不得自行補充或代答授權語句。
-   - **批次預授權**（`spex-schedule` 收集）：語句必須明示批次（「**授權本批次全自動開立 PR**」）。新模型下整批共用一條分支、批次結束**只開一個** PR（涵蓋全批卡片的 work items），由 schedule 於對帳通過後呼叫 `spex-pull-request`（批次最終模式）開立；稽核留言寫入該 PR 涵蓋的**每張父卡**並引用同一原文與時間戳；批次結束即失效，重跑批次需重新授權。
-6. **稽核留言（必寫）**：PR 開立後寫入父卡 `## [Spex] PullRequest 完成`，含模式（互動確認 / 預授權）、確認者輸入原文、時間戳、PR URL、技術防護狀態。
-7. **技術層防護（Claude Code）**：spex 安裝時把開 PR 工具（`mcp__azure-devops__create_pull_request`、`az repos pr create`、`gh pr create`）寫入 `.claude/settings.json` 的 `permissions.ask`——互動 session 由使用者當下核准、headless 自動拒絕。移除規則或改為 allow 屬有意識的防護降級，pull-request skill 會在稽核留言標註 `degraded`。
+> 開 PR 是**可逆、可審查**的動作，屬一般流程——沒有專屬的人為確認閘門，也沒有授權語句機制。
+> 真正需要把關的是不可逆的**合併**，見下一節「PR 合併控管」。
+
+1. **唯一入口**：`TRACKER.createPullRequest` 只允許由 `spex-pull-request` skill 呼叫；implement / schedule / 其他任何流程一律禁止直接開 PR。schedule 批次結束時的 PR 由 schedule **呼叫** `spex-pull-request`（批次最終模式）開立——唯一入口不變；schedule 自身仍禁止直接呼叫。**這是為了讓 Verify / 章戳 Gate 有統一收口，不是 PR 防護。**
+2. **前置條件**：最新一筆 Verify 留言為 PASS（`spex-selfcheck` 獨立驗收）；PASS 後分支有新 commit → 須重新驗收。章戳 Gate 亦須通過（`spex-stamp` exit 0）。
+3. **開立前查核**：檢查同分支 active PR；發現非本流程開立的 PR → 告警停止，交人工處置。
+4. **寫入前展示**：依 adapters「寫入前確認規則」展示完整 PR 內容（title / description / work items / reviewers）留痕即可，**不需等待使用者輸入**。
+5. **稽核留言（必寫）**：PR 開立後寫入父卡 `## [Spex] PullRequest 完成`，含 PR URL、Verify 輪次、`autoComplete: false`，並註明合併須由人類於平台 UI 操作。
+
+---
+
+## PR 合併控管
+
+> 核心命題：**開 PR 可逆，合併不可逆**。PR 一旦合進共用分支，程式碼就進了別人的工作基準。
+> 這裡是**無逃生口的硬擋**——互動 session 也不放行。
+
+1. **合併只由人類於平台 UI 執行**：任何 skill、任何模式、任何授權語句都不構成 AI 合併 PR 的依據。
+2. **禁止 autoComplete**：`autoComplete` / `autoCompleteSetBy` / `completionOptions` 一律禁用——那是**預約自動合併**，等同繞過本節。adapter 收到 `autoComplete === true` 視為違規，不呼叫 MCP 並停止。
+3. **禁止繞過 PR 直推保護分支**：`main` / `master` / `dev` / `develop` / `development`（見「Branch Policy」）。feature 分支推送不受限——那是 `spex-pull-request` 的必經步驟。
+4. **技術層防護（Claude Code）**，兩層互補：
+   - `permissions.deny`：`gh pr merge`、`gh pr review`（自我核准＝變相放行）、`az repos pr set-vote`——這些**沒有非合併用途**，可在字面層直接封。
+   - `spex-merge-guard.sh`（PreToolUse，**exit 2 硬擋**）：處理「要看引數才知道是不是合併」的那些——MCP 的 `update_pull_request` 帶 `status: completed` 或 autoComplete 家族（工具層粒度分不出「改 title」與「合併」）、`az repos pr update --status completed`、`git push` 到保護分支（`--all` / `--mirror` 一律擋）。保護分支清單可用 `SPEX_PROTECTED_BRANCHES` 環境變數覆寫。
+5. **三 agent 不等價（誠實標註）**：
+   | Agent | 有什麼 | 擋不到什麼 |
+   |---|---|---|
+   | Claude Code | `permissions.deny` ＋ PreToolUse hook（參數層精確判定） | Bash 字面解析對 compound／wrapper／alias 變體不完備 |
+   | GitHub Copilot | 只有 `terminal.denyList` 字面封鎖 | **MCP 參數層合併、`git push` 到保護分支** |
+   | OpenAI Codex | 只有 `sandbox_mode` + `approval_policy` 粗粒度 | **全部參數層與逐指令判定** |
+
+   文件與留言一律不得把後兩者說成等價防護。**本層擋的是「自動觸發」，不是有心人的刻意繞過。**
+6. **防護降級可稽核**：移除 hook、移除 deny 規則、改 allow、擴大 `SPEX_PROTECTED_BRANCHES` 排除保護分支，皆屬**有意識的降級**，須在當次任務鏈留痕。
 
 ---
 
@@ -227,12 +248,12 @@ PR 合併前必須 100% 通過：
 > 核心命題：防止 AI 略過受控的 MCP/TRACKER、直接呼叫底層 API/CLI。**prompt 與 skill 指令不是 access control**——靠文字叫 AI「請走 MCP」沒有強制力；可靠作法是在權限／sandbox 層讓「繞過 MCP」這條路跑不起來。
 
 1. **繞過指令家族**：`curl` / `wget`（raw HTTP）、`az boards`（ADO work item CLI）、`gh api`（GitHub API CLI）一律封鎖；這些是繞過 TRACKER 直打後端的主要管道。**單一來源**為 installer 的 `SPEX_BYPASS_COMMANDS`，改清單只改一處。
-2. **不蓋 PR 逃生口**：刻意**不**封 `az repos pr create` / `gh pr create`——那兩條由 `permissions.ask` 走人工核准（見「PR 開立控管」§7），deny 不得蓋掉。
+2. **不封 PR 開立管道**：刻意**不**封 `az repos pr create` / `gh pr create`——開 PR 是一般流程（見「PR 開立控管」）。**合併**管道則另有專屬 deny 與硬閘，見「PR 合併控管」。
 3. **各 agent 落地（強度不等價，誠實標註）**：
    - **Claude Code**：寫 `.claude/settings.json` 的 `permissions.deny`（由 harness 而非模型強制，優先序高於 ask/allow）。**最強的中層防護**。
    - **GitHub Copilot**：寫 `.vscode/settings.json` 的 `github.copilot.chat.agent.terminal.denyList`——**僅 VS Code agent 終端生效**；Copilot CLI / coding-agent 可能不讀。
    - **Codex**：寫 `.codex/config.toml` 的 `sandbox_mode = "workspace-write"` ＋ `approval_policy = "untrusted"`（封網路 egress→擋直打 REST）；**粒度較粗、無逐指令 denylist**。
-4. **殘餘缺口（本輪未補）**：deny / denyList / sandbox 屬**中層**防護，對 compound command（`x && curl …`）、wrapper、env-var 內插等變體脆弱。不可繞過的執行期硬擋（Claude Code `PreToolUse` hook，exit 2）為**另案**，尚未安裝；三 agent 中僅 Claude Code 具備該能力，Copilot / Codex 無對應。
+4. **殘餘缺口**：deny / denyList / sandbox 屬**中層**防護，對 compound command（`x && curl …`）、wrapper、env-var 內插等變體脆弱。Claude Code 的 `PreToolUse` exit-2 硬擋已用於章戳鏈（`spex-stamp-guard.sh`）與合併控管（`spex-merge-guard.sh`），但**尚未涵蓋本節的繞過指令家族**——把繞過封鎖也移進 hook 屬另案；三 agent 中僅 Claude Code 具備該能力。
 5. **防護降級可稽核**：移除 deny / denyList、改 allow、關 sandbox 都算有意識的降級，須在當次任務鏈留痕。
 
 ---
@@ -302,7 +323,7 @@ PR 合併前必須 100% 通過：
 
 hook 的命令列帶 `--plane` 標明本安裝所屬平面，**不跨平面裁定**——沙盒平面下若拿 host transcript 去驗，必然找不到沙盒內派發的 challenger 事件而產生「假 FAIL」。
 <!-- spex:sandbox-only:start -->
-沙盒版另有第二支 PreToolUse hook（`sandbox-guard.sh`，由 `spex-sandbox-init` 生成後手動合併）：兩支**並存**、同一次工具呼叫都會跑、任一 exit 2 即擋。合併時**只增不換**，不得覆蓋章戳硬閘條目。
+沙盒版另有一支 PreToolUse hook（`sandbox-guard.sh`，由 `spex-sandbox-init` 生成後手動合併）。連同合併硬閘（`spex-merge-guard.sh`，見「PR 合併控管」），沙盒版共 **3 支並存**、agent 版 **2 支**：各自獨立執行、任一 exit 2 即擋。合併設定時**只增不換**，不得覆蓋任何既有的 spex hook 條目。
 <!-- spex:sandbox-only:end -->
 
 ### 章的強度分層（誠實標註，三 agent 不等價）
@@ -384,7 +405,7 @@ hook 的命令列帶 `--plane` 標明本安裝所屬平面，**不跨平面裁�
 
 ## spex-schedule 批次模式互動確認規則
 
-0. **起跑序：`/plan`（必經）→ 執行驅動（規範）**：批次一律**先在 plan 模式**（唯讀）完成 Phase 0–2「盤點看板（對話呈現，不落檔）+ 分類確認 + 收集批次授權（含『授權本批次全自動開立 PR』）」，經使用者核准計畫（ExitPlanMode）後，再進入執行驅動跑 Phase 2.5 起的實作鏈。執行驅動**三選一**（並列，非漸進）：**手動**（小批次、估計一個 context 跑得完 → plan 核准後直接跑即可，**不需 goal**）、**/goal**（大批次 / 要無人值守跑到完 → 跨壓縮存活 + 收斂驗證 + turn 上限）、**/loop**（卡片常等外部事件）。**第一個寫入動作（建分支 / 寫檔 / 動 tracker）一律在離開 plan 模式之後**；未經 /plan 盤點與授權不得直接進執行。
+0. **起跑序：`/plan`（必經）→ 執行驅動（規範）**：批次一律**先在 plan 模式**（唯讀）完成 Phase 0–2「盤點看板（對話呈現，不落檔）+ 分類確認 + 收集批次授權」，經使用者核准計畫（ExitPlanMode）後，再進入執行驅動跑 Phase 2.5 起的實作鏈。**批次 PR 不需要另外的開立授權**——開 PR 屬一般流程，對帳通過後直接開立（見「PR 開立控管」）。執行驅動**三選一**（並列，非漸進）：**手動**（小批次、估計一個 context 跑得完 → plan 核准後直接跑即可，**不需 goal**）、**/goal**（大批次 / 要無人值守跑到完 → 跨壓縮存活 + 收斂驗證 + turn 上限）、**/loop**（卡片常等外部事件）。**第一個寫入動作（建分支 / 寫檔 / 動 tracker）一律在離開 plan 模式之後**；未經 /plan 盤點與授權不得直接進執行。
 1. **授權記錄**：批次啟動時必須記錄使用者授權原文 + 時間戳；各 skill 引用該記錄，不得自行補充授權範圍。
 2. **階段性寫入**（留言 / 子卡 / 任務狀態）：不展示，寫入留言即可。
 3. **分類 / 拆卡確認點**（plan Phase 2、task Phase 5.3）：展示後直接續行；但分類含「降 Tier」或「缺陷規模降級」時不可自行決定 → 標 blocked。

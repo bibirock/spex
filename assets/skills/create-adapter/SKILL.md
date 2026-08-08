@@ -283,7 +283,7 @@ description: >-
 以下屬機械式、可加性（additive）編輯，風險低，在 Phase 6 展示後隨其他產物一併寫入，不需要額外的確認輪：
 
 1. **`.mcp.json`**：若此 tracker 需要新 MCP server 且尚未註冊 → 新增一筆
-2. **`.claude/settings.json`**：若此 adapter 引入新的「會建立 PR」形狀的工具呼叫 → 在 `permissions.ask` 補一筆
+2. **`.claude/settings.json`**：若此 adapter 引入新的「會**合併** PR」形狀的通道 → 在 `permissions.deny` 補一筆（限**無非合併用途**的 CLI）；若合併與否取決於引數（例如同一個工具也用來改 title），deny 表達不了，須改為確認 `.claude/reference/spex/scripts/spex-merge-guard.sh` 的 MCP 工具名比對已涵蓋該工具，未涵蓋則於 Phase 6 一併提案補上。**開立** PR 的工具不需任何設定（開 PR 屬一般流程，見 `sdd-workflow.md`「PR 開立控管」）。
 3. **分支命名參數化提案**：依 Phase 2.10 蒐集的分支前綴，提案（不靜默寫入，在 Phase 6 一併展示）`.claude/rules/sdd-workflow.md`「Branch Naming」與 `.claude/reference/adapters/README.md`「`TRACKER.ensureBranch`」章節的參數化編輯（若尚未參數化）
 
 ---

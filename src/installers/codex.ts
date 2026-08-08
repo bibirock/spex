@@ -107,7 +107,7 @@ const codex: AgentInstaller = {
     // 開新對話執行——拿不到 harness 生成的章號與事件流，因此本環境**沒有可驗的章**。
     if (ctx.subagents.length > 0) {
       log(
-        '\n→ Subagents：Codex 無原生 subagent 機制，未安裝 challenger / verifier 定義；' +
+        '\n→ Subagents：Codex 無原生 subagent 機制，未安裝 challenger / verifier / code-reviewer 定義；' +
           '詰問以 `codex exec` 另起對話執行，且無事件流可供驗章（見 rules/sdd-workflow.md「章的強度分層」）',
       );
     }
@@ -120,6 +120,14 @@ const codex: AgentInstaller = {
           '無法安裝章戳硬閘；沙盒的驗章仍須由 relay 執行檔自行把關',
       );
     }
+
+    // PR 合併控管在 Claude Code 是「permissions.deny + PreToolUse hook」兩層；Codex 兩層都沒有——
+    // sandbox_mode / approval_policy 是粗粒度的整體授權，不具逐指令與參數層判定能力。
+    log(
+      '\n→ 合併防護（誠實標註）：Codex 無 hook、無逐指令 denylist，只有 sandbox_mode + approval_policy 的粗粒度控管。' +
+        '合併 PR（gh pr merge / MCP status=completed / autoComplete）與 git push 到保護分支' +
+        '皆無技術層硬擋，請依 rules/sdd-workflow.md「PR 合併控管」以人工紀律把關',
+    );
 
     log('\n→ 寫入 AGENTS.md');
     const agentsPath = path.join(cwd, 'AGENTS.md');

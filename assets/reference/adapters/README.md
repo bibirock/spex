@@ -441,7 +441,7 @@ params: {
 
 ## `TRACKER.recordBenchmark(params)`
 
-> **選用操作，非 12 必填核心**；目前僅 `spex-benchmark` skill 使用，adapter 可不實作（未實作 → 回 `success: false`，由 benchmark skill fallback 為輸出 Markdown 供使用者手動貼上）。未列入頂部「Skills 引用 Adapter 規範」12 核心對照表；benchmark skill 以 grep SOP 直接讀 adapter 的同名章節。
+> **選用操作，非 12 必填核心**；spex 內建 skill 目前**沒有**呼叫者（原使用者 `spex-benchmark` 已移除），保留供專案自訂 skill 使用。adapter 可不實作（未實作 → 回 `success: false`，由呼叫方 fallback 為輸出 Markdown 供使用者手動貼上）。未列入頂部「Skills 引用 Adapter 規範」12 核心對照表；呼叫方以 grep SOP 直接讀 adapter 的同名章節。
 
 **把 SDD 基準 / 成本紀錄寫入「會渲染表格與可勾選 to-do」的載體（report 頁 / 文件內文 body）。** 與 `addComment` 的關鍵差異：目的地必須**渲染** Markdown 表格與 `- [ ]` to-do——只能保留純文字、不渲染的留言類載體**不可**用於本操作。
 
@@ -468,7 +468,7 @@ params: {
 行為規則：
 
 - 必須寫到**會渲染**的載體（如頁面內文 body）；不可退化為不渲染的留言。
-- 目的地不存在 / 系統不支援渲染表格與 to-do → 回 `success: false` + `reason`，由 benchmark skill fallback。
+- 目的地不存在 / 系統不支援渲染表格與 to-do → 回 `success: false` + `reason`，由呼叫方 fallback。
 - adapter 文件必須在對應章節說明 `target` 接受的形式與 `append` / `replace` 的實作方式。
 
 > **寫入前確認規則**：同 `addComment`（展示完整內容 → 使用者「確認」後才寫）。
@@ -508,8 +508,8 @@ skills 不會自動呼叫擴充操作；只有引用該 adapter 的 skill 才可
 
 1. 同一內容在前一個步驟已**完整展示**且其後未變更 → 確認步驟得引用先前展示（標明步驟編號，例：「內容同 Phase 7 展示，無變更」），不必重貼全文；內容有任何變更則必須重新完整展示。
 2. `linkDependency` 不單獨確認——由 task Phase 5.4 一次展示全部依賴邊、單次確認後逐邊呼叫。
-3. `createPullRequest` 在使用者已給「全自動開立 PR 預授權」時，依 SDD workflow 規則「PR 開立控管」的預授權條款執行（仍須展示內容與稽核紀錄，但不暫停等待輸入）。
-4. schedule 批次執行期間：使用者對排程計畫的一次性確認，構成批次內各卡**階段性留言**（escalation 留言、Implement / Verify 留言等）的預先批准——內容仍逐筆展示，但不暫停等待輸入。`createPullRequest` 不在此列，仍依第 3 點的雙路徑。
+3. `createPullRequest` 屬一般流程（見 SDD workflow 規則「PR 開立控管」）：展示完整內容留痕即可，**不暫停等待輸入**。注意這只涵蓋「開立」——`updatePullRequest` 帶 `status: completed` 或任何 autoComplete 家族屬**合併**，一律禁止（見「PR 合併控管」）。
+4. schedule 批次執行期間：使用者對排程計畫的一次性確認，構成批次內各卡**階段性留言**（escalation 留言、Implement / Verify 留言等）的預先批准——內容仍逐筆展示，但不暫停等待輸入。
 
 ---
 

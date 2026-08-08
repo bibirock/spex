@@ -30,7 +30,7 @@ export interface RuleSource {
 }
 
 /**
- * subagent 定義（`assets/agents/*.md`）— 例如 challenger / verifier。
+ * subagent 定義（`assets/agents/*.md`）— challenger / verifier（章戳鏈）與 code-reviewer（品質審查）。
  * 章戳鏈要求詰問者與驗收者是「全新上下文、唯讀」的獨立 subagent，且派發時以
  * `subagent_type` 指名；沒有註冊的 agent 定義就派不出去，所以這是 skill 之外的
  * 獨立資產型別。目前只有 Claude Code 有原生 subagent 機制（`.claude/agents/`），
@@ -68,8 +68,8 @@ export function getRuleSkills(frontmatter: Record<string, unknown>): string[] {
  * 各 installer 把它翻譯成原生格式（Claude `permissions.deny`、Copilot `denyList`、
  * Codex sandbox 封網路），讓「繞過 MCP」這條路在權限/sandbox 層就跑不起來。
  *
- * 刻意**不**含 `az repos pr create` / `gh pr create`——那兩條開 PR 管道由
- * `SPEX_PR_ASK_RULES` 設為 `permissions.ask`（保留人工核准逃生口），不可被 deny 蓋掉。
+ * 刻意**不**含 `az repos pr create` / `gh pr create`——開 PR 自 v0.9.0 起是一般流程，
+ * 不再有專屬防護（防護改押在合併端，見 `SPEX_MERGE_DENY_COMMANDS`）。
  *
  * 此常數是「一份來源、多 agent 落地」的單一來源，也是 uninstall 的所有權清單依據：
  * 各 installer 只移除由它翻譯出、與當前內容完全相符的項目，使用者自訂規則一律保留。
@@ -104,12 +104,60 @@ export const SPEX_SANDBOX_ONLY_SKILLS: readonly string[] = [
 
 /**
  * 只有沙盒平面用得到的 reference（比對 `ReferenceSource.relativePath` 前綴）。
- * 注意 `spex/scripts/` 四支腳本（challenge-audit / transcript-to-stream /
- * spex-stamp-guard / task-draft-lint）**兩種模式都要裝**，不列在此。
+ * 注意 `spex/scripts/` 底下的腳本（challenge-audit / transcript-to-stream /
+ * spex-stamp-guard / spex-merge-guard / task-draft-lint）**兩種模式都要裝**，不列在此。
  */
 export const SPEX_SANDBOX_ONLY_REFERENCES: readonly string[] = [
   'sandboxes/',
   'spex/relay-protocol.md',
+];
+
+/**
+ * 合併 PR 的 CLI 指令家族——**沒有任何非合併用途**，故可在字面層直接 deny。
+ * `gh pr review` / `az repos pr set-vote` 列入是因為自我核准等於變相放行合併
+ * （branch policy 湊足票數後 PR 即可被合）。
+ *
+ * 刻意**不含** `az repos pr update`：它同時是改 title / description 的正常通道，
+ * 只有帶 `--status completed` 才是合併——那要靠 `spex-merge-guard.sh` 逐引數判定。
+ * 更刻意**不含** `git push`：feature 分支推送是 `spex-pull-request` 的必經步驟，
+ * 只有推到保護分支才算繞過 PR，同樣只能由 hook 解析目標分支後判定。
+ *
+ * 此常數是「一份來源、多 agent 落地」的單一來源，也是 uninstall 的所有權清單依據。
+ */
+export const SPEX_MERGE_DENY_COMMANDS: readonly string[] = [
+  'gh pr merge',
+  'gh pr review',
+  'az repos pr set-vote',
+];
+
+/**
+ * 受保護分支：直接推送等於完全繞過 PR 審查。
+ * 來源＝`assets/rules/sdd-workflow.md`「Branch Policy」（`master`/`main` 不可直接 commit/merge；
+ * PR 目標分支須為 `dev`/`develop`/`development` 之一）——改這裡要同步改那份規則。
+ * 目標專案分支命名不同時，可用 `SPEX_PROTECTED_BRANCHES` 環境變數覆寫（逗號分隔），
+ * 不必改動已安裝的 hook 腳本。
+ */
+export const SPEX_PROTECTED_BRANCHES: readonly string[] = [
+  'main',
+  'master',
+  'dev',
+  'develop',
+  'development',
+];
+
+/**
+ * v0.8.0 以前寫進 `permissions.ask` 的「PR 開立防護」規則。
+ *
+ * 政策已反轉：擋 PR **開立**只是在每條任務鏈尾端插一次人工等待，開 PR 可逆也可審查；
+ * 真正不可逆的是**合併**（程式碼進共用分支）。因此開 PR 回歸一般流程，防護改押在合併端。
+ *
+ * 此清單只剩一個用途——讓 `init` / `uninstall` 把既有安裝殘留的這三條**清掉**，
+ * 否則升級後的使用者會繼續被無謂地攔問。不再有任何地方寫入它們。
+ */
+export const SPEX_LEGACY_PR_ASK_RULES: readonly string[] = [
+  'mcp__azure-devops__create_pull_request',
+  'Bash(az repos pr create:*)',
+  'Bash(gh pr create:*)',
 ];
 
 export interface McpServerDefinition {
@@ -160,7 +208,7 @@ export interface InstallContext {
   references: ReferenceSource[];
   /** 要安裝的 rules 檔案（專案規則，skill 執行時讀取） */
   rules: RuleSource[];
-  /** 要安裝的 subagent 定義（challenger / verifier；僅 Claude Code 有原生落點） */
+  /** 要安裝的 subagent 定義（challenger / verifier / code-reviewer；僅 Claude Code 有原生落點） */
   subagents: SubagentSource[];
   /** 是否覆寫已存在的檔案 */
   force: boolean;
