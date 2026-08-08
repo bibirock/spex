@@ -142,7 +142,7 @@ description: SDD 流程中 spec 之後的第一站。讀取 work item descriptio
 - Tier: <1 / 2>
 - 缺陷規模: <S / M / L>（缺陷才填）
 - 理由: <一句話>
-- 分支建議: <type>/ADO-<id>-<kebab-case-summary>（需求 → feature；缺陷 → fix；其他由使用者明示）
+- 分支建議: <type>/<TRACKER_PREFIX>-<id>-<kebab-case-summary>（前綴依當前 adapter；需求 → feature；缺陷 → fix；其他由使用者明示）
 - 輸入檢核: <通過 / 缺漏清單>
 
 關鍵發現：

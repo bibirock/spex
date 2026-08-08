@@ -1,6 +1,6 @@
 ---
 name: spex-schedule
-description: 批次排程執行器。指定多個卡片編號（或 tracker 查詢、specs/ 目錄等任務來源），自動執行時從 base 分支切出單一共用分支 `chore/schedule-<YYYYMMDD-HHmm>`（時間戳到分，同日可多批；續行依 tracker 留言記錄的分支沿用），整批所有卡片都在此分支上依序套用 SDD workflow（plan → task → implement → selfcheck），批次結束對帳通過後呼叫 spex-pull-request 開「一個」涵蓋全批的 PR 給使用者確認；每輪迭代重新從 tracker 盤點全部卡片狀態，以終態唯一性與結束前對帳保證不遺漏任何過程及任務；起跑序固定先以 /plan 唯讀盤點＋確認＋授權，核准後由執行驅動三選一推進（小批次手動即可；大批次或要無人值守跑到完用 /goal；卡片常等外部事件用 /loop），支援中斷續行與失敗隔離。前置：各卡片規格已寫入 description。後續：人類 reviewer。
+description: 批次排程執行器。指定多個卡片編號（或 tracker 查詢、local-file 的 specs/ 目錄等任務來源），自動執行時從 base 分支切出單一共用分支 `chore/schedule-<YYYYMMDD-HHmm>`（時間戳到分，同日可多批；續行依 tracker 留言記錄的分支沿用），整批所有卡片都在此分支上依序套用 SDD workflow（plan → task → implement → selfcheck），批次結束對帳通過後呼叫 spex-pull-request 開「一個」涵蓋全批的 PR 給使用者確認；每輪迭代重新從 tracker 盤點全部卡片狀態，以終態唯一性與結束前對帳保證不遺漏任何過程及任務；起跑序固定先以 /plan 唯讀盤點＋確認＋授權，核准後由執行驅動三選一推進（小批次手動即可；大批次或要無人值守跑到完用 /goal；卡片常等外部事件用 /loop），支援中斷續行與失敗隔離。前置：各卡片規格已寫入 description。後續：人類 reviewer。
 ---
 
 # Spex: Schedule — 多卡片批次排程
@@ -68,7 +68,7 @@ description: 批次排程執行器。指定多個卡片編號（或 tracker 查�
 |---|---|
 | **ID 清單**（主要） | 使用者直接給多個卡片編號（例：`1001 1002 1003`） |
 | **tracker 查詢 / 範圍**（如 MVP tag） | ADO：依 adapter 擴充操作 `ADO.queryWorkItems` 取清單（無查詢工具時請使用者自行查好貼上 ID）；查詢條件由使用者提供（sprint / 標籤 / WIQL） |
-| **local-file** | 掃描 `specs/` 目錄下的 item 目錄名作為 ID 清單 |
+| **local-file** | 掃描 `specs/<日期>/<任務名>/` 兩層目錄，以 `<日期>-<任務名>` 組回 ID 清單（見 adapter「ID 規則」） |
 
 清單去重；空清單 → 停止。
 

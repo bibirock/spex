@@ -629,7 +629,7 @@ AI 工作流最大的可靠度缺口不是「會犯錯」，而是**同一類錯
 | Adapter                | 狀態    | 說明                                                                             |
 | ----------------------- | ------- | -------------------------------------------------------------------------------- |
 | `azure-devops`（`ado`） | 目前預設、功能最完整 | 透過 [Azure DevOps MCP](#安裝) 讀寫 work item；本 repo 隨附的範例值皆為佔位符，需自行設定組織/專案 |
-| `local-file`            | 內建    | 無 tracker 時的純檔案模式，狀態落在 repo 內的 `specs/` 目錄                        |
+| `local-file`            | 內建    | 無 tracker 時的純檔案模式，狀態落在 repo 內的 `specs/<日期>/<任務名>/`（階段留言 append-only 保留完整歷程） |
 | 其他（Jira / Linear / GitHub Issues / …） | 待新增 | 執行 `/create-adapter` 依協定問答產生新 adapter 文件與 host 端接線；完成後改 `sdd-workflow.md` 的 `Tracker Adapter:` 一行即可切換，其餘 skill 不需改動 |
 
 新增 adapter 需要什麼、協定長什麼樣，見 `assets/reference/adapters/README.md`。
