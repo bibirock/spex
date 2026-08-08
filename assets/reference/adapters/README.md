@@ -563,6 +563,6 @@ adapter 須以表格列出全部寫入欄位的格式，作為 skill 寫入時�
 | 文件                             | 對應系統                       | 狀態      |
 | -------------------------------- | ------------------------------ | --------- |
 | [ado.md](./azure-devops/ado.md)  | Azure DevOps                   | ✅ 可用   |
-| [local-file.md](./local-file.md) | 本機 specs/ 目錄（無 Tracker） | ✅ 可用   |
+| [local-file.md](./local-file.md) | 本機 specs/ 目錄（無 Tracker）  | ✅ 可用   |
 | `github-issues.md`               | GitHub Issues                  | 🔲 待實作 |
 | `jira.md`                        | Jira                           | 🔲 待實作 |

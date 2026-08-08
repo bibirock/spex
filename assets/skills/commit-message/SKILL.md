@@ -32,7 +32,7 @@ commit 的 tracker item ID **一律由現行 adapter 取得，不在本 skill �
 1. 由 `.claude/rules/sdd-workflow.md` 的 `Tracker Adapter:` 取得現行 adapter，對照 adapters/README「Adapter 選擇規則」找到 adapter 檔路徑。
 2. `grep -n "^## .TRACKER\.ensureBranch" <adapter-file>` → 起始行；`grep -n "^## " <adapter-file>` 找下一個 `## ` → 結束行。
 3. `Read(file, offset=<起始>, limit=<結束-起始>)` 只讀該段，取得「組分支名」格式。
-4. 以**當前正在實作的子卡 Task ID**（Phase 3 執行中的 T-XXX 對應 childId）作為 commit 的 tracker item ID；**不是**父卡 id、**不是**從分支名 `.../ADO-<父id>-...` 解析出的父 id。
+4. 以**當前正在實作的子卡 Task ID**（Phase 3 執行中的 T-XXX 對應 childId）作為 commit 的 tracker item ID；**不是**父卡 id、**不是**從分支名 `.../<TRACKER_PREFIX>-<父id>-...` 解析出的父 id。
 
 > ID 格式因 adapter 而異（見 adapters/README「ID 格式說明」）；本 skill 不假設為數字。
 > ⛔ **ID 必須由 tracker 即時讀回**（readItem / fetch 子卡），**禁止**依建卡順序、前一張卡編號 +1、或分支名推斷——自動編號會被其他資料或已刪項目占號，推斷必錯。

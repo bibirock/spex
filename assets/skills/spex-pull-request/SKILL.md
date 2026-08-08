@@ -38,7 +38,7 @@ PR 開立守門員。**整個 SDD 流程中，`TRACKER.createPullRequest` 只允
 
 ### 兩種開立模式
 
-- **單卡模式（預設）**：單一任務鏈呼叫，source = 該卡 `<type>/ADO-<id>-...` 分支，PR 涵蓋一張父卡（+子任務）。
+- **單卡模式（預設）**：單一任務鏈呼叫，source = 該卡 `<type>/<TRACKER_PREFIX>-<id>-...` 分支（前綴依當前 adapter），PR 涵蓋一張父卡（+子任務）。
 - **批次最終模式（`mode: batch-final`，由 spex-schedule Phase 4.B 呼叫）**：source = 共用分支 `chore/schedule-<YYYYMMDD-HHmm>`（見 SDD workflow 規則「Branch Naming › 排程批次共用分支」），**一個** PR 涵蓋整批所有 done 卡片。卡片 ID 清單由 schedule 傳入（**不**從分支名解析）；Phase 1 Verify Gate 對清單**逐卡**檢查、Phase 2 `workItemIds` 聚合全批、Phase 3 稽核留言寫入**每張**父卡。
 
 ## Process

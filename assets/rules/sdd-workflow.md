@@ -98,7 +98,7 @@ Branch：
 # <TRACKER_PREFIX> 依當前 adapter 決定，見上；ADO adapter 範例：feature/ADO-1234-add-example-feature
 ```
 
-驗證 regex：`^(feature|fix|chore|refactor)/ADO-<id>-`
+驗證 regex：`^(feature|fix|chore|refactor)/<TRACKER_PREFIX>-<id>-`——`<TRACKER_PREFIX>` 代入當前 adapter 宣告的前綴（ADO adapter → `ADO-`、local-file → `LOCAL-`）。**不可寫死 `ADO-`**，否則換 adapter 後合法分支會被誤判不合規。
 
 ### 排程批次共用分支（spex-schedule 專用）
 
@@ -115,7 +115,7 @@ chore/schedule-<YYYYMMDD-HHmm>
 
 > **續行 / 重跑的分支判定**：每個批次的共用分支名在啟動時產生一次、寫入 **tracker 批次分支留言**（`## [Spex] Schedule 批次分支`，記於凍結清單錨點卡）。中斷後續行或 redrive **同一批次** → 從 tracker 讀回該留言沿用原分支（不另開）；**全新批次** → 產生新時間戳分支並寫入留言。不可用「今天的日期」反推分支名（同日多批會撞名）。進度持久化只在 tracker，後續者 / 換手者只憑 tracker 即可接續，不依賴任何本機檔案。
 
-批次模式下，這條共用分支即各 per-card skill（plan / task / implement / selfcheck / pull-request）分支驗證的**合法分支**——它們不再要求 `ADO-<id>` 格式；卡片 ID 改由 schedule 逐卡呼叫時的脈絡提供（**不**從分支名解析）。
+批次模式下，這條共用分支即各 per-card skill（plan / task / implement / selfcheck / pull-request）分支驗證的**合法分支**——它們不再要求 `<TRACKER_PREFIX>-<id>` 格式；卡片 ID 改由 schedule 逐卡呼叫時的脈絡提供（**不**從分支名解析）。
 
 ---
 
@@ -131,7 +131,7 @@ chore/schedule-<YYYYMMDD-HHmm>
 
 ## 分支生命週期
 
-命名規則見上方「Branch Naming」。驗證 regex：`^(feature|fix|chore|refactor)/ADO-<id>-`。
+命名規則與驗證 regex 見上方「Branch Naming」（前綴依當前 adapter 決定，不寫死 `ADO-`）。
 
 ### 建立與驗證階段
 
@@ -161,7 +161,7 @@ chore/schedule-<YYYYMMDD-HHmm>
 | 批次結束（schedule Phase 4 對帳通過後）         | schedule 呼叫 `spex-pull-request`（批次最終模式）對共用分支 → base 開**一個** PR，涵蓋全批卡片的 work items                                                                                                              |
 
 - 批次啟動的 `git checkout -b <共用分支>`（或續行時 `git checkout <共用分支>`）屬合規操作，不受「禁止自動 git checkout」限制；前提：`git status --short` 乾淨，不乾淨 → 停止請使用者處理，不可硬切。
-- 共用分支不符 per-card `ADO-<id>` regex 屬正常；批次模式下各 skill 以「排程批次共用分支」regex 驗證，卡片 ID 由 schedule 逐卡脈絡提供，不從分支名解析。
+- 共用分支不符 per-card `<TRACKER_PREFIX>-<id>` regex 屬正常；批次模式下各 skill 以「排程批次共用分支」regex 驗證，卡片 ID 由 schedule 逐卡脈絡提供，不從分支名解析。
 
 ---
 
