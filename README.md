@@ -9,13 +9,14 @@
 
 > **spex** — 把 SDD（spec-driven development）的 skills、reference 與 MCP 設定一鍵安裝到任何專案，**一份來源、多 agent 落地**，同時支援 **Claude Code**、**GitHub Copilot** 與 **OpenAI Codex CLI**。
 
-![version](https://img.shields.io/badge/version-0.7.0-blue) ![node](https://img.shields.io/badge/node-%3E%3D18-green) ![type](https://img.shields.io/badge/type-ESM-yellow) ![license](https://img.shields.io/badge/license-MIT-green)
+![version](https://img.shields.io/badge/version-0.8.0-blue) ![node](https://img.shields.io/badge/node-%3E%3D18-green) ![type](https://img.shields.io/badge/type-ESM-yellow) ![license](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
 ## 目錄
 
 - [這是什麼 · 核心理念](#這是什麼--核心理念)
+- [選哪一種安裝？](#選哪一種安裝)
 - [運作原理總覽](#運作原理總覽)
 - [需求](#需求)
 - [安裝](#安裝)
@@ -23,6 +24,7 @@
 - [SDD 流程總覽（流程圖）](#sdd-流程總覽流程圖)
 - [批次排程生命週期（流程圖）](#批次排程生命週期流程圖)
 - [每個 SKILL 的內部流程](#每個-skill-的內部流程)
+- [沙盒版（選用）](#沙盒版選用)
 - [實踐原理（為何這樣設計）](#實踐原理為何這樣設計)
 - [治理機制總覽](#治理機制總覽)
 - [支援的 Agent](#支援的-agent)
@@ -44,12 +46,43 @@
 - **一份來源、多 agent 落地**：skills/reference/rules 只維護一份，安裝時動態轉換成各 agent 的原生格式（Claude Code 的 `.claude/`、Copilot 的 `.github/` + `.spex/`、Codex 的 `.codex/`）。
 - **tracker 為唯一事實來源、adapter 化可替換**：流程的「狀態、證據、續行」都落在 tracker 的 work item / issue 留言鏈，不依賴本機檔案——壓縮 / 換手 / 斷線後由下一輪重新盤點自動還原。tracker 本身透過 `TRACKER.*` 抽象介面存取，目前內建 **Azure DevOps** 與 **local-file**（無 tracker 時的純檔案模式）兩個 adapter，用 `create-adapter` skill 即可新增 Jira / Linear / GitHub Issues 等其他專案管理平台的 adapter，SDD 流程本身不綁死任何單一平台（詳見[支援的 Tracker](#支援的-tracker)）。
 - **可靠度建在不依賴模型自律的硬防護上**：獨立驗收的確定性 Gate、PR 開立的權限層防護、繞過管道的 MCP-only 封鎖、失敗教訓的閉環升級。
+- **兩種安裝版本，預設無沙盒**：一般專案裝 `agent` 版即可（驗章走 Agent 子代理 + PreToolUse 硬閘）；只有在「執行程式碼必須被嚴格隔離」時才裝 `sandbox` 版，代價是 token 開銷 2 倍以上（見下一節）。
+
+---
+
+## 選哪一種安裝？
+
+`spex init` 會問你要裝哪一版。**先看結論：一般情況選 agent（預設）就好。**
+
+| | **agent**（預設，推薦） | **sandbox**（選用） |
+| --- | --- | --- |
+| 安裝指令 | `spex init` | `spex init --mode sandbox` → 再跑 `/spex-sandbox-init` |
+| 寫碼與驗證在哪 | 本機同一份原始碼樹 | 零憑證、egress 白名單的 Docker 容器 |
+| 章源（交棒憑證落在哪） | 本 session 事件流 `~/.claude/projects/` | host 影子流（容器**物理寫不到**） |
+| 驗章硬閘 | PreToolUse hook（`--plane agent`） | relay 執行檔；hook 轉 `--plane sandbox` 擋源頭 |
+| tracker 寫入 | skill 直接呼叫 MCP | `[TRACKER-ACTION]` → host relay 代寫 |
+| 多裝的資產 | — | 沙盒協定 / 樣板 / 渲染腳本、relay 協定、`spex-sandbox-init`、`spex-relay-init` |
+| **token 開銷** | 基準 | **2 倍以上** |
+| 什麼時候用 | **一般情況** | 執行程式碼須嚴格限制環境（不可外連、不可持有憑證）時 |
+
+### 為什麼沙盒版貴 2 倍以上
+
+因為沙盒版的 **host 端與沙盒端各自是一個 AI**，兩邊都得把需求完整理解一遍，再靠文字來回溝通：
+
+- **host 端**要讀 tracker 卡片、把整個階段打包成「自足的派工 prompt」（沙盒看不到對話歷史，必須把規格、AC、邊界全部寫進去）、接收沙盒吐回的 `[TRACKER-ACTION]` 區塊做中繼，最後還要**自己獨立重跑一次驗證束**跟沙盒的自報數字對帳。
+- **沙盒端**拿到的是一份冷啟動 prompt，得從零重建整份上下文才能動工。
+
+同一份需求被理解兩次、同一批結論在兩端來回傳遞一次——這就是 2 倍以上開銷的來源，且它是這個架構的**必要成本**，不是可以最佳化掉的浪費。
+
+換到的是什麼：容器沒有 PAT / MCP、也連不出去，所以「AI 寫的程式碼被執行」這件事被關在一個拿不到憑證、打不出網路的盒子裡；而章戳鏈的載體（影子流）由 host tee 到容器掛載區之外，**容器物理上寫不到自己的成績單**。
+
+**沒有這種隔離需求就別裝**——agent 版的獨立驗收、對抗式詰問、章戳鏈照樣完整運作，只是全部在同一份原始碼樹內完成。
 
 ---
 
 ## 運作原理總覽
 
-> 這一節分兩層：**核心原則**適用於任何一次 `spex init` 安裝；**進階沙盒執行模型**則是另外跑過 `spex-sandbox-init` 並開啟對應開關才會疊加的加強版。裝完直接用 `/spex-plan`、`/spex-implement` 等核心 skill 的預設流程圖見下方 [SDD 流程總覽](#sdd-流程總覽流程圖)；細部的 skill 拆解見[每個 SKILL 的內部流程](#每個-skill-的內部流程)。
+> 這一節講的是**兩種安裝版本共通的核心原則**；沙盒版額外疊加的執行模型見下方[沙盒版（選用）](#沙盒版選用)。裝完直接用 `/spex-plan`、`/spex-implement` 等核心 skill 的預設流程圖見下方 [SDD 流程總覽](#sdd-流程總覽流程圖)；細部的 skill 拆解見[每個 SKILL 的內部流程](#每個-skill-的內部流程)。
 
 ### 核心原則（所有安裝都適用）
 
@@ -76,66 +109,9 @@ flowchart LR
 
 - **章不是一句 PASS**：章號由 harness 生成（模型鑄造不出來）、章面落在子代理事件內（主 agent 的文字偽造不進去）、章面的 sha256 綁定受審草稿（**蓋章後改一個字就失效**）。自己補寫章面或自算 sha256 一律視為偽造。
 - **判定與蓋章分離**：challenger 只詰問不改檔，修正是原階段的事；驗章只由程式裁定，**結果不可被 LLM 改判**。
-- **強度依環境而異**：沙盒 > Claude Code > Codex／Copilot（後者沒有可驗的章）——見下一節末的「章的強度分三層」表。
+- **章源與硬閘由安裝版本決定**：agent 版章在本 session 事件流、由 PreToolUse hook（`--plane agent`）裁定；sandbox 版章在 host 影子流、由 relay 裁定。兩個平面**不互相代班**——細節見[沙盒版（選用）](#沙盒版選用)。
 
-### 進階：Docker 沙盒執行模型（選用，`spex-sandbox-init`）
-
-`spex-sandbox-init` 這個選用 skill 可以再疊加一層機器強制的**雙平面架構**：程式碼探索、寫 code、跑驗證都搬進**零憑證、egress 白名單的 Docker 容器**執行——容器連不出去、也拿不到任何 git / tracker 憑證；容器每次交棒前，由一個**全新上下文、唯讀**的 challenger／verifier 做敵對式詰問，只有 PASS 才蓋章交棒，FAIL 就帶著結構化修正清單退回；Host 端收到蓋章結果後，**自己再獨立重跑一次驗證束**，確認「帳實相符」才 commit。這是設計時的目標架構，目前落地在 `spex-sandbox-init` 生成的沙盒協定裡，且協定預設**關閉**這條驗證鏈（`sddSkillGuardEnabled`，需在 Sandbox Profile 明確開啟）——**8 個核心 skill（plan / task / implement / selfcheck / pull-request / fixbug / write-spec / schedule）本身並不依賴 Docker 或沙盒才能運作**，未接沙盒時獨立驗收一樣會發生，只是在同一份原始碼樹內完成、不涉及獨立容器與 Host relay。
-
-```mermaid
-flowchart TD
-    subgraph U["使用者"]
-        U1["提供卡號 / 任務清單起跑"]
-    end
-
-    subgraph H["Host（監測者：掌控權限與交付）"]
-        H1["讀 tracker 卡片<br/>規格 / AC / 邊界"]
-        H2["dispatch 派工進沙盒<br/>（卡片原文程式注入）"]
-        H3["relay 代寫 tracker<br/>+ 機器驗章（未過 exit≠0 拒發）"]
-        H4{{"Host 獨立重跑驗證束<br/>--verify / --e2e / --diff-cov"}}
-        H5["commit"]
-    end
-
-    subgraph S["沙盒執行者（零憑證・egress 白名單；程式碼與驗證都在此）"]
-        S1["Plan：分類 + 技術計畫"]
-        S2["Task：垂直切片 + 開子卡"]
-        S3["Implement：紅→綠→重構"]
-        S4["Selfcheck：獨立驗收"]
-        G{{"對抗式詰問<br/>challenger／verifier<br/>全新上下文・唯讀"}}
-    end
-
-    U1 --> H1 --> H2 --> S1
-    S1 --> S2 --> S3 --> S4
-    S2 -.->|"開卡前"| G
-    S3 -.->|"交棒前"| G
-    S4 -.->|"驗收"| G
-    G -->|"FAIL：產修正清單退回"| S3
-    G -->|"PASS：章面落影子流（沙盒寫不到）"| H3
-    H3 --> H4
-    H4 -->|"帳實不符：作廢退回"| S3
-    H4 -->|"帳實相符"| H5
-    H5 --> DONE["卡片 Done"]
-
-    style H fill:#eef4ff,stroke:#7c9ce0
-    style S fill:#fff7ea,stroke:#e0b96b
-    style U fill:#f3f3f3,stroke:#999
-```
-
-**讀圖重點**（本圖描述的是**啟用沙盒後**的加強模型，見上方說明）：
-
-- **雙平面**：程式碼探索、寫 code、跑驗證、對抗式詰問全程在**沙盒**內完成，且沙盒零憑證、egress 白名單——寫不出沙盒、連不出去；tracker 讀寫、git commit、開 PR 只在 **Host** 進行。
-- **章戳鏈**：交棒（Task → Implement、Implement → Selfcheck、Selfcheck 驗收）前，都先派一個**全新上下文、唯讀**的 challenger／verifier 做敵對式詰問；只有全 PASS 才蓋章交棒，FAIL 就帶著結構化修正清單退回，不論留言怎麼寫都不算數。**章不是一句 PASS**：章號是 harness 生成的 `tool_use_id`（模型鑄造不出來）、章面落在子代理事件內（主 agent 的文字偽造不進去）、章面帶 sha256 綁定受審內容（蓋章後改一個字就失效），下游由 `challenge-audit.py` 程式重驗，exit ≠ 0 一律不得交棒。
-- **機器閘門而非自律**：Host 收到蓋章結果後**自己獨立重跑一次驗證束**（lint / typecheck / test / E2E / diff coverage），數字與執行者自報「帳實相符」才會 commit——這一步是決定性的反做假機制，不是「看 AI 說完成就算完成」。
-
-**章的強度分三層，不同環境不等價**（誠實標註，細節見 `assets/rules/sdd-workflow.md`「章戳鏈」）：
-
-| 強度 | 環境 | 章的載體與保護 |
-|---|---|---|
-| 最強 | 啟用沙盒 | 影子流由 Host tee 到掛載區之外，容器**物理寫不到** |
-| 中 | Claude Code（未接沙盒） | 事件流由 harness 寫在 `~/.claude/projects/`；spex 安裝的 PreToolUse 硬閘擋下「未驗章的 tracker 寫入」與「對事件流的改寫」 |
-| 無 | Codex / Copilot | 無 subagent 註冊機制、無事件流 → **沒有可驗的章**，只剩確定性 lint |
-
-各 skill 的 Phase 拆解見下方[每個 SKILL 的內部流程](#每個-skill-的內部流程)，跨 skill 的治理規則見 [`assets/rules/sdd-workflow.md`](assets/rules/sdd-workflow.md)，沙盒協定本身見 `assets/reference/sandboxes/README.md`。
+各 skill 的 Phase 拆解見下方[每個 SKILL 的內部流程](#每個-skill-的內部流程)，跨 skill 的治理規則見 [`assets/rules/sdd-workflow.md`](assets/rules/sdd-workflow.md)。
 
 ---
 
@@ -175,7 +151,7 @@ git pull && npm install -g .
 
 ```bash
 cd <你的專案>
-spex init   # 互動式：偵測 agent、挑 skills、寫入 skills/reference/rules，並設定 PR/MCP-only 防護
+spex init   # 互動式：偵測 agent、選安裝版本、挑 skills、寫入 skills/reference/rules，並設定 PR/MCP-only 防護
 ```
 
 ---
@@ -184,11 +160,25 @@ spex init   # 互動式：偵測 agent、挑 skills、寫入 skills/reference/ru
 
 ### `spex init`
 
-互動式初始化 — 偵測目標專案的 agent、挑要安裝的 skills、寫檔。會一併安裝 [reference](#支援的-agent)、[**專案規則 `rules/`**](#rules專案規則)、[**PR 開立防護**](#3-pr-開立防護流程層--技術層) 與 [**MCP-only 繞過防護**](#4-mcp-only-繞過防護中層)。
+互動式初始化 — 偵測目標專案的 agent、**選安裝版本**、挑要安裝的 skills、寫檔。會一併安裝 [reference](#支援的-agent)、[**專案規則 `rules/`**](#rules專案規則)、[**PR 開立防護**](#3-pr-開立防護流程層--技術層) 與 [**MCP-only 繞過防護**](#4-mcp-only-繞過防護中層)。
 
 ```bash
-spex init
+spex init                     # 互動式，安裝版本預設停在 agent（無沙盒）
+spex init --mode sandbox      # 直接指定沙盒版（--sandbox 為等價語法糖）
+spex init -y                  # 非互動；一律 agent 版
 ```
+
+| 選項 | 說明 |
+| --- | --- |
+| `--mode <agent\|sandbox>` | 安裝版本。差異與成本見[選哪一種安裝？](#選哪一種安裝) |
+| `--sandbox` | 等同 `--mode sandbox` |
+| `--agent <id>` | `claude-code` / `github-copilot` / `codex`；不給則偵測 + 互動選擇 |
+| `--force` | 覆寫已存在的檔案 |
+| `-y, --yes` | 跳過所有互動（agent 版、全部 skills、不裝 Playwright 工具） |
+
+> agent 版**不會**安裝沙盒協定、relay 文件與 `spex-sandbox-init` / `spex-relay-init`，共用資產（如 `spex-stamp`、`rules/sdd-workflow.md`）裡描述沙盒平面的段落也會在安裝時剝除——落地的內容只剩你這個平面用得到的部分。
+>
+> Claude Code 的章戳硬閘 hook 會依版本寫成 `--plane agent` 或 `--plane sandbox`。**切換版本時重跑 `spex init --mode <另一個>` 即可**，它會就地替換同一條目，不會留下兩支互相矛盾的 hook。
 
 ### `spex uninstall`
 
@@ -434,11 +424,107 @@ flowchart TD
 
 **角色**：依 Conventional Commits 產生繁中 commit 訊息。串行 8 步：取子卡 ID（tracker 讀回、禁推斷）→ 判 scope/type → 蒐集異動 → 寫描述/本文/footer → 輸出 `type(ID): [scope] 繁中描述`。
 
-### 12. `spex-sandbox-init` — 建立語言無關的 Docker 沙盒（工具型）
+### 12. `spex-sandbox-init` — 建立語言無關的 Docker 沙盒（工具型）**｜僅沙盒版**
 
 **角色**：架構設計師，依 Sandbox Profile 協定為任意語言/技術棧的專案生成雙平面 Docker 沙盒（Docker 隔離、egress 防火牆白名單、PreToolUse guard、確定性驗證束），與 `create-adapter` 是姊妹 skill——本 skill 負責語言/技術棧軸，`create-adapter` 負責 tracker 軸。
 
-流程：讀 `sandboxes/README.md` 協定 → 9 小節需求問答（基底映像、套件管理器、sidecar、驗證束、防火牆、軸 2/3 可行性、格式化/lint、檔案落點）→ 若已有其他 profile 則對照起草，否則直接依協定的核心 Schema 起草 → 執行 `render-profile.mjs --dry-run` 試跑 → 同步 README 清單 → 展示確認 → 實際生成沙盒檔案。**產出的是可運作的沙盒，不只是文件**——`render-profile.mjs` 是本 skill 委派實際檔案渲染的獨立零依賴 Node 腳本，避免 LLM 手動轉譯樣板內容時掉字走樣。
+流程：**Phase 0 章戳硬閘平面檢查**（確認 hook 已在 `--plane sandbox`，否則要求先重跑 `spex init --mode sandbox`）→ 讀 `sandboxes/README.md` 協定 → 9 小節需求問答（基底映像、套件管理器、sidecar、驗證束、防火牆、軸 2/3 可行性、格式化/lint、檔案落點）→ 若已有其他 profile 則對照起草，否則直接依協定的核心 Schema 起草 → 執行 `render-profile.mjs --dry-run` 試跑 → 同步 README 清單 → 展示確認 → 實際生成沙盒檔案。**產出的是可運作的沙盒，不只是文件**——`render-profile.mjs` 是本 skill 委派實際檔案渲染的獨立零依賴 Node 腳本，避免 LLM 手動轉譯樣板內容時掉字走樣。
+
+### 13. `spex-relay-init` — 建立 tracker 寫入通道（工具型）**｜僅沙盒版**
+
+**角色**：架構設計師，依 `reference/spex/relay-protocol.md` 引導生成該專案的 relay 執行檔——沙盒零憑證寫不到 tracker，只能吐 `[TRACKER-ACTION]` 區塊由 host 端 relay 逐字代寫。relay 同時是**沙盒平面的驗章硬閘**：送出前對影子流跑 `challenge-audit.py`，未過以非零 exit 拒發。
+
+---
+
+## 沙盒版（選用）
+
+> 這一章只在你裝了 `spex init --mode sandbox` 時才適用。**沒有嚴格隔離需求就跳過**——成本與取捨見上方[選哪一種安裝？](#選哪一種安裝)。
+
+沙盒版把程式碼探索、寫 code、跑驗證、對抗式詰問全部搬進**零憑證、egress 白名單的 Docker 容器**；tracker 讀寫、git commit、開 PR 只留在 host。8 個核心 skill（write-spec / plan / fixbug / task / implement / selfcheck / pull-request / schedule）**本身不依賴 Docker**，未裝沙盒時獨立驗收照樣發生，只是在同一份原始碼樹內完成。
+
+### 影子流：章為什麼偽造不了
+
+章戳鏈的可信度全押在一件事上——**執行者改不到自己的成績單**。沙盒版靠「tee 在 host 端、寫進容器碰不到的路徑」做到這點：
+
+```mermaid
+flowchart LR
+    subgraph SB["沙盒容器（零憑證・egress 白名單）"]
+        C["claude -p 執行階段任務"]
+        CH["派 challenger / verifier<br/>（全新上下文・唯讀）"]
+        C --> CH
+        CH -->|"末行章面<br/>CHALLENGE-VERDICT …"| C
+    end
+
+    C -->|"stdout（docker compose exec）"| WD["dispatch-watchdog-host.sh<br/>★ 在 HOST 執行"]
+    WD -->|"tee"| SH[("影子流<br/>~/.sandbox-shadow/&lt;repo&gt;/*.result.md<br/>★ repo 與掛載區之外<br/>★ 容器物理寫不到")]
+    WD -->|"tee"| MI[("鏡像檔<br/>sandbox/tasks/*.result.md<br/>掛載區・沙盒可見可改<br/>僅供觀察，不可稽核")]
+
+    SH --> AU{{"challenge-audit.py<br/>S0–S8 / I3<br/>（跑 host-only 快照）"}}
+    AU -->|"exit ≠ 0"| BLK["relay 拒發<br/>不得寫 tracker、不得交棒"]
+    AU -->|"exit 0"| RL["relay 逐字代寫 tracker"]
+
+    style SH fill:#eef7ee,stroke:#79a879
+    style MI fill:#f3f3f3,stroke:#aaa,stroke-dasharray: 4 3
+    style BLK fill:#fdeeee,stroke:#d08a8a
+```
+
+**讀圖重點**：
+
+- **兩份輸出、只有一份算數**：watchdog 在 host 端把容器 stdout 同時 tee 成影子流與鏡像檔。鏡像檔在掛載區、沙盒改得動，**只供人觀察**；影子流在 repo 與掛載區之外，容器連路徑都碰不到——這才是 `challenge-audit.py` 唯一信任的來源。拿鏡像檔充當影子流＝驗了執行者可竄改的東西，屬有意識的防護降級。
+- **看門狗同時管停滯**：影子流 mtime 連續 `WD_STALE` 秒無進展判 hung，`WD_HARDCAP` 為絕對上限；殺法是 host 端 kill exec client + 容器內 `pkill claude`（exec client 死不代表容器行程死）。
+- **已棄用的容器內版本**：舊的容器內 `dispatch-watchdog.sh` 把 result 檔寫在容器可寫的掛載區，沙盒 agent 可注入偽造的 `[DISPATCH-DONE]` 事件——**任何 profile 生成的沙盒都只應包含 host 版**。
+
+### host 端關係：誰握有什麼
+
+```mermaid
+flowchart TD
+    subgraph H["HOST 權限平面（握有 PAT / MCP / git 憑證）"]
+        H1["讀 tracker 卡片<br/>規格 / AC / 邊界"]
+        H2["dispatch.sh 派工<br/>卡片原文以程式注入（禁手改／摘要）"]
+        H3["relay 逐字代寫 tracker<br/>★ 送出前對影子流驗章，未過拒發"]
+        H4{{"host 獨立重跑驗證束<br/>--verify / --e2e / --diff-cov"}}
+        H5["commit → pull-request 開 PR"]
+        HG["hook：sandbox-guard.sh（host 側）<br/>擋直接編輯源碼 / 跑碼類指令"]
+        SG["hook：spex-stamp-guard.sh --plane sandbox<br/>擋 host 直發含章留言（逼走 relay）"]
+    end
+
+    subgraph S["沙盒程式碼平面（零憑證・連不出去）"]
+        S1["探索 → 寫 code → 跑驗證"]
+        S2["派 challenger / verifier 取章"]
+        SG2["hook：sandbox-guard.sh（沙盒側）<br/>擋 git commit/push、az/gh/curl/wget"]
+    end
+
+    H1 --> H2 -->|"① 自足 prompt"| S1
+    S1 --> S2
+    S2 -->|"② TRACKER-ACTION 區塊"| H3
+    S2 -.->|"③ 影子流（host tee，沙盒寫不到）"| H3
+    H3 --> H4
+    H4 -->|"帳實不符：作廢退回"| S1
+    H4 -->|"帳實相符"| H5
+
+    style H fill:#eef4ff,stroke:#7c9ce0
+    style S fill:#fff7ea,stroke:#e0b96b
+    style SG fill:#eef7ee,stroke:#79a879
+```
+
+**讀圖重點**：
+
+- **憑證只在 host**：容器沒有 PAT / MCP、也連不出去，所以「決定要寫什麼」在沙盒、「實際寫入」在 host，中間三條通道就是①派工 prompt、②`[TRACKER-ACTION]`、③影子流。這也是 token 貴 2 倍的結構性原因——①要自足、②要逐字中繼。
+- **機器閘門而非自律**：host 收到蓋章結果後**自己重跑一次驗證束**，數字與沙盒自報對得起來才 commit。這是決定性的反做假機制。
+- **兩支 PreToolUse hook 並存**（Claude Code）：`sandbox-guard.sh` 守雙平面邊界（host 不准直接寫碼、沙盒不准碰 git/網路），`spex-stamp-guard.sh --plane sandbox` 守章戳鏈（擋 host 繞過 relay 直發含章留言）。同一次工具呼叫兩支都跑、任一 exit 2 即擋；合併 `settings.sandbox-snippet.json` 時**只增不換**。
+- **平面必須一致**：沙盒版務必用 `spex init --mode sandbox` 安裝。若 hook 還停在 `--plane agent`，它會拿 host session transcript 去驗沙盒內產生的章——那條流裡根本沒有 challenger 派發事件，**必然假 FAIL**。
+
+### 章的強度分三層，不同環境不等價
+
+（誠實標註，細節見 [`assets/rules/sdd-workflow.md`](assets/rules/sdd-workflow.md)「章戳鏈」）
+
+| 強度 | 環境 | 章的載體與保護 | 邊界 |
+|---|---|---|---|
+| 最強 | sandbox 版 | 影子流由 host tee 到掛載區之外，容器**物理寫不到** | Docker 非硬安全邊界（共享 kernel） |
+| 中 | agent 版（Claude Code） | 事件流由 harness 寫在 `~/.claude/projects/`；PreToolUse 硬閘擋下「未驗章的 tracker 寫入」與「對事件流的改寫」 | hook 的 Bash 比對是字面解析，對 compound / wrapper 變體不完備 |
+| 無 | Codex / Copilot | 無 subagent 註冊機制、無事件流 → **沒有可驗的章** | 只剩確定性 lint；文件不得宣稱這裡有章 |
+
+沙盒協定本身見 `assets/reference/sandboxes/README.md`，relay 接線契約見 `assets/reference/spex/relay-protocol.md`。
 
 ---
 
@@ -482,15 +568,15 @@ flowchart TD
 
 AI 工作流最大的可靠度缺口不是「會犯錯」，而是**同一類錯誤反覆犯**。教訓閉環把失敗變成跟著 repo 走、可取回、可升級為硬防護的持久記憶（依據 Reflexion 反思式記憶 / lessons-learned ledger）。
 
-```mermaid
-flowchart LR
-    F["SDD Fail / 被糾正<br/>(selfcheck / implement F.4 / schedule)"] --> C["Capture<br/>萃取結構化教訓"]
-    C --> D["Distill<br/>grep INDEX 去重<br/>命中→recurrence+1"]
-    D --> ST[(".claude/lessons/<br/>L-seq.md + INDEX.md<br/>★必 commit")]
-    ST --> R["Recall<br/>各 skill 前導段<br/>讀 scope 命中教訓"]
-    R --> PM["Promote（recurrence≥2）<br/>主編排者提案 → 人工確認<br/>→ 確定性硬防護"]
-    R --> PR2["Prune<br/>引用失效 → retired"]
-```
+五個環節（`Capture → Distill → Recall → Promote → Prune`）：
+
+| 環節 | 觸發點 | 做什麼 |
+| --- | --- | --- |
+| **Capture** | selfcheck Phase 4 Fail / implement F.4 Fail / schedule 被使用者糾正 | 寫 tracker 留言的同時萃取一則結構化教訓（症狀／根因／防護／升級狀態） |
+| **Distill** | 寫入前 | grep `INDEX.md` 比對症狀＋根因；命中 → `recurrence+1` 並更新 `lastSeen`，**不新增** |
+| **Recall** | plan / task / implement / selfcheck / schedule 的前導段 | 取 `skills:` 命中本 skill 的 `active` 教訓，把「防護」納入本輪注意事項 |
+| **Promote** | `recurrence ≥ 2` | 由 skill **主編排者**（非獨立驗證者）提案升級為確定性硬防護，**人工確認後**寫入並標 `promoted` |
+| **Prune** | Recall 時 | 教訓引用的檔／旗標已不存在 → 標 `retired`，不再注入 |
 
 - **位置**：`.claude/lessons/`（Copilot `.spex/lessons/`、Codex `.codex/lessons/`），**必須 commit、禁止 gitignore**，目錄 on-demand。格式單一來源 `reference/spex/lessons-template.md`，治理單一來源 `sdd-workflow.md` 的 `## 教訓回收與升級`。
 - **鐵則**：獨立驗證者不背 Capture/Promote；`createPullRequest` 不因升級旁路。
@@ -515,6 +601,7 @@ flowchart LR
 | 治理面向         | 對應機制                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | PR 開立控管      | 流程層唯一入口 + 技術層 `permissions.ask` + **MCP-only 繞過防護**（封後門直打 API/CLI）                             |
+| 章戳鏈硬閘（Claude Code） | agent 版一支 `spex-stamp-guard.sh --plane agent`；sandbox 版該支轉 `--plane sandbox` 並與 `sandbox-guard.sh` **兩支並存**（任一 exit 2 即擋、合併只增不換）。移除／降級須在當次任務鏈留痕 |
 | SDD 流程可靠度   | 獨立驗收（確定性 Gate + 對抗式判讀）+ **教訓閉環**（反覆失敗升級為確定性硬防護，不依賴模型自律）+ DoD「測試未弱化」 |
 | 任務相依編排     | `task` 寫 tracker 原生 Predecessor/Successor 連結；`implement` 建 DAG 拓撲排序依序執行；`schedule` 批次編排         |
 | Token 成本       | MVP-only 紀律 + 增量看板；`benchmark` 量測每 Scrum point 成本                                                       |
@@ -555,7 +642,7 @@ spec-driven development 目前最具代表性的開源工具是 [GitHub Spec Kit
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | 核心流程終點     | 到 Implement／agent 完成任務即結束；獨立審查多為社群擴充套件或規劃中功能（如 Spec Kit 的 `/speckit.review` 仍是 open issue） | **獨立驗收是核心強制步驟**：`selfcheck` 用全新上下文（不繼承實作對話）逐條 AC 做二元判定，無證據一律 Fail |
 | PR 開立          | 由 agent 依 prompt 指示自行判斷是否開 PR，屬約定而非技術限制                                                          | **技術層硬閘**：`TRACKER.createPullRequest` 只允許單一 skill 呼叫，`permissions.ask`/`permissions.deny` 在設定檔層級鎖死，繞過 MCP 直打 API/CLI 另有 deny list 防護 |
-| 執行環境隔離     | 未見標準化的沙盒執行 / 憑證隔離機制                                                                                    | **選用**：`spex-sandbox-init` 可生成零憑證、egress 白名單的 Docker 沙盒，搭配交棒前的對抗式 challenger/verifier 蓋章鏈 |
+| 執行環境隔離     | 未見標準化的沙盒執行 / 憑證隔離機制                                                                                    | **選用（獨立安裝版本）**：`spex init --mode sandbox` + `spex-sandbox-init` 生成零憑證、egress 白名單的 Docker 沙盒，搭配交棒前的對抗式 challenger/verifier 蓋章鏈；不需要隔離的專案裝預設 agent 版即可，不吃這份成本 |
 | 任務狀態來源     | 規格通常落在 repo 內檔案，未見內建外部追蹤系統整合                                                                    | **tracker 留言鏈為唯一事實來源**，可跨對話壓縮 / 斷線 / 多 agent 交接，由下一輪自動重新盤點還原               |
 | Agent 支援廣度   | Spec Kit 支援 30+ 種 agent，生態較成熟                                                                                 | 目前 3 種（Claude Code / GitHub Copilot / OpenAI Codex CLI），透過 adapter 架構可擴充                 |
 
@@ -651,6 +738,10 @@ node bin/spex.js --help   # 本地執行 CLI（等同 npm start）
 
 ### 升級注意
 
+- **v0.8.0**：`spex init` 分成 **agent（預設，無沙盒）/ sandbox** 兩種安裝版本（`--mode` / `--sandbox`）。三點要注意：
+  1. **既有專案重跑 `spex init` 會落到 agent 版**，共用資產裡的沙盒段落會被剝除；但 `init` 只寫不刪，先前裝的 `spex-sandbox-init` / `sandboxes/` 等資產**不會**自動移除——要清乾淨請先 `spex uninstall` 再重裝。
+  2. **正在用沙盒的專案請改跑 `spex init --mode sandbox`**。章戳硬閘 hook 現在帶 `--plane` 參數；停在舊的無參數字串或 `--plane agent` 會讓 host 拿 session transcript 去驗沙盒內產生的章，**必然假 FAIL**。重跑會就地替換同一條目，不會重複附加。
+  3. `sandbox-guard.sh` 與 `spex-stamp-guard.sh` 是**兩支並存**的 PreToolUse hook。合併 `settings.sandbox-snippet.json` 時只增不換，別把章戳硬閘條目蓋掉。
 - **v0.7.0**：新增 `spex-sandbox-init` skill（依 Sandbox Profile 協定生成語言無關的 Docker 沙盒腳手架，含 `assets/reference/sandboxes/` 協定文件、參考 profile 與樣板/渲染腳本）；`create-adapter` 擴充為含 relay 執行檔樁檔自動生成、安全可加性設定編輯、安全敏感項目檢查清單三個新 Phase；`adapters/README.md` 協定新增「分支前綴宣告」與「規格建卡欄位對照」兩項強制章節，`ado.md`／`local-file.md` 與 `spex-write-spec` 已同步；`sdd-workflow.md` 的 Branch Naming 改為讀 adapter 宣告的分支前綴，不再寫死 `ADO-`。既有專案重跑 `spex init` 即可拿到新 skill 與協定章節。
 - **v0.6.0**：新增三軌治理隨 `init` 落地——MCP-only 繞過防護（`permissions.deny` / denyList / sandbox）、教訓閉環（`.claude/lessons/`，**必 commit**）、DoD「測試未弱化」。既有專案重跑 `spex init` 即補上規則檔新章節與防護；`commands.md` / `testing.md` 客製內容請保留。
 - **v0.5.0（歷史）**：移除 `spex-clarity`（併入 write-spec / plan）、`spex-orchestrate`、`create-sdd-workflow`。從 < v0.5.0 升級時先 `uninstall` 舊安裝或手動刪除 `.claude/skills/spex-clarity/` 等舊資產，再以新版 `init` 重裝。

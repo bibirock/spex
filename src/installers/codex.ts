@@ -112,6 +112,15 @@ const codex: AgentInstaller = {
       );
     }
 
+    // 章戳硬閘（PreToolUse hook）是 Claude Code 專屬機制，Codex 無對應落點：
+    // sandbox 版的 relay 驗章接線同樣依賴那條 hook 鏈，這裡一併誠實標註。
+    if (ctx.mode === 'sandbox') {
+      log(
+        '\n→ 安裝版本 sandbox：已寫入沙盒協定與 relay 文件供參考，但 Codex 無 PreToolUse hook 機制，' +
+          '無法安裝章戳硬閘；沙盒的驗章仍須由 relay 執行檔自行把關',
+      );
+    }
+
     log('\n→ 寫入 AGENTS.md');
     const agentsPath = path.join(cwd, 'AGENTS.md');
     await safeWriteFile(agentsPath, buildAgentsDoc(skills), { force, log });

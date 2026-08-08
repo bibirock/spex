@@ -25,6 +25,20 @@ description: >-
 
 ## Process
 
+### Phase 0：章戳硬閘平面檢查（強制最先，30 秒）
+
+沙盒平面的驗章由 relay 裁定，但 host 端那支 `spex-stamp-guard.sh` 必須跟著切到沙盒平面，否則它會拿 host session transcript 去驗沙盒內產生的章 → **必然假 FAIL**，整條鏈卡死。
+
+```
+grep -n 'spex-stamp-guard.sh' .claude/settings.json
+```
+
+| 結果 | 動作 |
+| --- | --- |
+| 命令列尾為 `--plane sandbox` | ✅ continue |
+| 命令列尾為 `--plane agent`、或無 `--plane` 參數（v0.7.0 舊字串） | **停止**，請使用者先執行 `spex init --mode sandbox`（會就地替換同一條目，不重複附加），完成後再回來 |
+| 完全找不到（非 Claude Code，或未安裝） | 記為「本環境無章戳硬閘」，於 Phase 7 誠實標註，不得宣稱沙盒有可驗的章 |
+
 ### Phase 1：讀取 Sandbox Profile 協定（強制最先）
 
 讀 `.claude/reference/sandboxes/README.md`，理解：
@@ -34,6 +48,7 @@ description: >-
 - 通用固定常數（防火牆通用必要網域、不可傳播清單）
 - `verifyBundle` 與 `commandsRuleDocSync` 的雙驅動機制
 - 檔案擺放規則
+- **「與非沙盒章戳硬閘的共存」章節**——本 skill 生成的 `sandbox-guard.sh` 與既有的 `spex-stamp-guard.sh` 是**兩支並存**的 hook，合併時只增不換
 
 協定與當前需求衝突 → 先調整 README 再起草 profile。
 
@@ -169,6 +184,10 @@ description: >-
 - README: 已更新 / 無需更新
 - 生成檔案: <N> 個（列出關鍵幾個：Dockerfile / docker-compose.sandbox.yml / dispatch.sh / sandbox-guard.sh …）
 
+## PreToolUse hook 狀態（兩支並存）
+- spex-stamp-guard.sh: --plane sandbox ✅ / --plane agent ❌（需重跑 `spex init --mode sandbox`）/ 未安裝（本環境無章戳硬閘）
+- sandbox-guard.sh: 已生成，**尚未生效**——需依 `.claude/settings.sandbox-snippet.json` 手動合併進 `.claude/settings.json`，合併時**只增不換**，勿覆蓋上面那支條目
+
 ## 軸 2/3 開關狀態
 - SDD 工作流 guard: 開啟 / 關閉
 - Tracker card-injection guard: 開啟 / 關閉（trackerAdapterId: <id> / 無）
@@ -183,7 +202,8 @@ description: >-
 3. 若需要 tracker 整合：執行 `/create-adapter`
 4. `.claude/settings.sandbox-snippet.json`、`.claude/rules/commands.sandbox-section.md`、
    `.claude/rules/testing.sandbox-section.md` 為參考片段，需手動合併進專案既有規則檔
-   （不會自動覆蓋既有內容）
+   （不會自動覆蓋既有內容）。settings 片段的合併**只增不換**：`sandbox-guard.sh` 與
+   `spex-stamp-guard.sh` 兩支 PreToolUse hook 並存，任一 exit 2 即擋
 ```
 
 ---
@@ -201,6 +221,8 @@ description: >-
 
 ## Red Flags
 
+- ❌ 跳過 Phase 0 平面檢查，或在 `--plane agent` 狀態下生成沙盒（章戳鏈必定假 FAIL）
+- ❌ 把 `sandbox-guard.sh` 條目**取代** `spex-stamp-guard.sh` 條目（兩支並存，只增不換）
 - ❌ 沒先讀 `.claude/reference/sandboxes/README.md`
 - ❌ 核心 Schema 必填欄位缺任一
 - ❌ 只寫 profile 文件，沒有實際跑 `render-profile.mjs` 生成沙盒檔案
@@ -212,6 +234,8 @@ description: >-
 
 ## Verification
 
+- [ ] Phase 0 已確認 `spex-stamp-guard.sh` 在 `--plane sandbox`（或已誠實標註本環境無章戳硬閘）
+- [ ] Phase 7 已回報兩支 hook 的狀態與「只增不換」的合併規則
 - [ ] 已讀 `.claude/reference/sandboxes/README.md`
 - [ ] Phase 2 全部子節資訊已蒐齊
 - [ ] Profile 文件含全部核心 Schema 必填欄位
