@@ -84,6 +84,24 @@ Profile 由使用者在 `spex-sandbox-init` Phase 2 顯式選擇（或新建）�
 
 ---
 
+## 與非沙盒章戳硬閘的共存（兩支 PreToolUse hook）
+
+沙盒版的專案在 `.claude/settings.json` 的 `hooks.PreToolUse` 底下會有**兩支** spex 相關的 hook，職責不同、缺一不可：
+
+| hook | 來源 | 職責 | 觸發面 |
+|---|---|---|---|
+| `spex-stamp-guard.sh` | `spex init` 自動寫入 | 章戳鏈：保護事件流不被改寫；沙盒平面下擋「host 直接以 MCP 發含章留言」 | `Write\|Edit\|MultiEdit\|Bash\|mcp__.*` |
+| `sandbox-guard.sh` | 本協定生成，**使用者手動合併** | 雙平面邊界：host 不得直接編輯源碼／跑碼類指令；沙盒側不得碰 git commit/push 與 az/gh/curl/wget | `Edit\|Write\|MultiEdit` 與 `Bash` |
+
+共存規則（違反會直接造成假 FAIL 或防護破口）：
+
+1. **兩支都會跑**：同一次工具呼叫兩支各自獨立執行，任一 exit 2 即擋下。彼此不覆蓋、不排序依賴。
+2. **合併只增不換**：把 `settings.sandbox-snippet.json` 的條目**附加**進 `hooks.PreToolUse`，絕不移除或改寫既有的 `spex-stamp-guard.sh` 條目。
+3. **平面必須一致**：沙盒版的前提是已跑過 `spex init --mode sandbox`，該條目命令列尾為 `--plane sandbox`。若仍是 `--plane agent`（或 v0.7.0 的無參數舊字串），host 端會拿 session transcript 去驗沙盒內產生的章 → **必然假 FAIL**。修法：重跑 `spex init --mode sandbox`（會就地替換同一條目，不會重複附加）。
+4. **判定契約不在本檔**：沙盒平面的驗章由 relay 執行檔裁定，接線契約的單一來源是 `.claude/reference/spex/relay-protocol.md`「驗章硬閘接線契約」，本節不重述。
+
+---
+
 ## 通用固定常數（協定層級，不進 profile 欄位）
 
 以下常數對所有 profile 一致，寫死在協定與樣板內，**不是**每個 profile 各自宣告：

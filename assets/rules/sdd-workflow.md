@@ -274,7 +274,7 @@ PR 合併前必須 100% 通過：
 | 蓋章者 | `challenger` / `verifier` subagent（`.claude/agents/`） | 全新上下文、唯讀 |
 | 章號 | Agent 派發事件的 `tool_use_id`（`toolu_…`）或回傳的 `agentId` | harness 生成，模型無法鑄造、天然不重複 |
 | 章面 | 子代理輸出末行 `[CHALLENGE-VERDICT …]` / `[VERIFIER-VERDICT …]` | 位於子代理事件內，主 agent 的文字偽造不進去 |
-| 載體 | 事件流，**一律在目標 repo 之外**（沙盒＝host 影子流；Claude Code＝`~/.claude/projects/`） | 執行者寫不到（沙盒）／受 PreToolUse 硬閘保護（Claude Code） |
+| 載體 | 事件流，**一律在目標 repo 之外**（Claude Code＝`~/.claude/projects/`<!-- spex:sandbox-only:start -->；沙盒＝host 影子流<!-- spex:sandbox-only:end -->） | 由 harness 寫入，受 PreToolUse 硬閘保護<!-- spex:sandbox-only:start -->；沙盒平面更進一步：容器物理寫不到<!-- spex:sandbox-only:end --> |
 | 內容綁定 | 章面 `sha256`（NFC → 空白摺疊 → trim → 前 16 hex） | 舊章蓋不了改過的內容（防重放） |
 | 消耗帳 | 一章一用 | 用過的章不能支持第二個宣稱 |
 
@@ -289,15 +289,33 @@ PR 合併前必須 100% 通過：
 3. **蓋章後不得潤飾**：留言本體必須逐字等於受審圍欄，唯一允許的差異是追加引章宣稱行。改一個字內容綁定就失效。
 4. **真實子卡 ID 不進蓋章本體**：ID 在開卡後才存在，混進本體會使章綁不到最終留言；ID 事實走獨立留言，可由 `getDependencies` 直接重新推導。
 
+### 平面 ↔ 驗章硬閘（安裝版本決定）
+
+`spex init` 有兩種安裝版本，對應章戳鏈的兩個平面。**兩個平面章源不同，硬閘也不同，不可互相代班**：
+
+| 平面（安裝版本） | tracker 寫入 | 章源 | 驗章硬閘 |
+|---|---|---|---|
+| `agent`（預設，無沙盒） | skill 直接呼叫 MCP（`TRACKER.*`） | 本 session 事件流 `~/.claude/projects/` | PreToolUse hook `spex-stamp-guard.sh --plane agent` |
+<!-- spex:sandbox-only:start -->
+| `sandbox` | 容器吐 `[TRACKER-ACTION]` → host relay 代寫 | host 影子流（容器物理寫不到） | relay 執行檔自身（見 `.claude/reference/spex/relay-protocol.md`）；hook 轉 `--plane sandbox`，只擋 host 直發的含章留言 |
+<!-- spex:sandbox-only:end -->
+
+hook 的命令列帶 `--plane` 標明本安裝所屬平面，**不跨平面裁定**——沙盒平面下若拿 host transcript 去驗，必然找不到沙盒內派發的 challenger 事件而產生「假 FAIL」。
+<!-- spex:sandbox-only:start -->
+沙盒版另有第二支 PreToolUse hook（`sandbox-guard.sh`，由 `spex-sandbox-init` 生成後手動合併）：兩支**並存**、同一次工具呼叫都會跑、任一 exit 2 即擋。合併時**只增不換**，不得覆蓋章戳硬閘條目。
+<!-- spex:sandbox-only:end -->
+
 ### 章的強度分層（誠實標註，三 agent 不等價）
 
 | 強度 | 環境 | 機制 | 邊界 |
 |---|---|---|---|
-| 最強 | 沙盒（`spex-sandbox-init`） | 影子流由 host tee 到掛載區之外，容器**物理寫不到** | Docker 非硬安全邊界（共享 kernel） |
+<!-- spex:sandbox-only:start -->
+| 最強 | 沙盒（`spex init --mode sandbox` + `spex-sandbox-init`） | 影子流由 host tee 到掛載區之外，容器**物理寫不到** | Docker 非硬安全邊界（共享 kernel） |
+<!-- spex:sandbox-only:end -->
 | 中 | Claude Code（非沙盒） | 事件流由 harness 寫在 `~/.claude/projects/`；PreToolUse 硬閘（`spex-stamp-guard.sh`）擋下未驗章的 tracker 寫入與對事件流的改寫 | hook 的 Bash 比對是字面解析，對 compound／wrapper 變體不完備 |
 | 無 | Codex / Copilot | 無 subagent 註冊機制、無事件流 → **沒有可驗的章** | 只剩 `task-draft-lint` 的確定性檢查；文件不得宣稱這裡有章 |
 
-移除 hook、改用掛載區鏡像充當影子流、關閉沙盒，皆屬**有意識的防護降級**，須在當次任務鏈留痕。
+移除 hook<!-- spex:sandbox-only:start -->、改用掛載區鏡像充當影子流、關閉沙盒<!-- spex:sandbox-only:end -->，皆屬**有意識的防護降級**，須在當次任務鏈留痕。
 
 ---
 

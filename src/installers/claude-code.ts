@@ -13,6 +13,7 @@ import {
   SPEX_BYPASS_COMMANDS,
   type AgentInstaller,
   type InstallContext,
+  type InstallMode,
   type McpContext,
   type RuleSource,
   type UninstallContext,
@@ -46,14 +47,34 @@ const SPEX_BYPASS_DENY_RULES: readonly string[] = SPEX_BYPASS_COMMANDS.map(
 );
 
 /**
- * 章戳硬閘 hook（PreToolUse，exit 2）。這是**非沙盒平面**唯一由 harness 而非模型強制的環節：
- * 含章戳宣稱的 tracker 寫入未過 challenge-audit 一律拒發，且事件流（`~/.claude/projects/`，
- * 章的載體）不得被 Write / Edit / Bash 改寫。命令字串同時是 uninstall 的所有權清單依據。
+ * 章戳硬閘 hook（PreToolUse，exit 2）。這是由 harness 而非模型強制的環節：
+ * 含章戳宣稱的 tracker 寫入未過驗章一律拒發，且事件流（`~/.claude/projects/`，章的載體）
+ * 不得被 Write / Edit / Bash 改寫。
+ *
+ * 命令帶 `--plane` 參數標明本安裝屬於哪個平面——章戳鏈有兩個平面、兩種章源，
+ * hook 只在自己的平面有裁定權：
+ * - `--plane agent`：章在本 session 事件流 → 本 hook 跑 challenge-audit 裁定。
+ * - `--plane sandbox`：章在 host 影子流、由 relay 執行檔裁定 → 本 hook 不驗 transcript
+ *   （驗了必然找不到 challenger 派發事件而產生假 FAIL），改為擋下 host 直發的含章留言。
  */
 // 以 `bash <path>` 呼叫而非直接執行：reference 檔案透過 safeWriteFile 寫入、不帶執行位元，
 // 直接執行會因權限失敗而讓整條硬閘靜默失效。
-const SPEX_STAMP_HOOK_COMMAND =
+const SPEX_STAMP_HOOK_BASE =
   'bash "$CLAUDE_PROJECT_DIR/.claude/reference/spex/scripts/spex-stamp-guard.sh"';
+const SPEX_STAMP_HOOK_COMMANDS: Record<InstallMode, string> = {
+  agent: `${SPEX_STAMP_HOOK_BASE} --plane agent`,
+  sandbox: `${SPEX_STAMP_HOOK_BASE} --plane sandbox`,
+};
+/**
+ * 章戳硬閘的所有權清單（uninstall 與「換模式時就地替換」的判定依據）。
+ * 含 v0.7.0 的無參數舊字串，讓升級／切換模式時是**替換同一條目**而非重複附加——
+ * 兩支平面不同的硬閘同時掛著會互相矛盾（其中一支必定誤判）。
+ */
+const SPEX_STAMP_HOOK_OWNED: readonly string[] = [
+  SPEX_STAMP_HOOK_COMMANDS.agent,
+  SPEX_STAMP_HOOK_COMMANDS.sandbox,
+  SPEX_STAMP_HOOK_BASE,
+];
 const SPEX_STAMP_HOOK_MATCHER = 'Write|Edit|MultiEdit|Bash|mcp__.*';
 
 interface HookCommand {
@@ -107,7 +128,7 @@ const claudeCode: AgentInstaller = {
   },
 
   async install(ctx: InstallContext): Promise<void> {
-    const { cwd, skills, references, rules, subagents, force, log } = ctx;
+    const { cwd, mode, skills, references, rules, subagents, force, log } = ctx;
     const paths = claudeCode.paths(cwd);
 
     log('\n→ 安裝 Skills 到 .claude/skills/');
@@ -148,8 +169,8 @@ const claudeCode: AgentInstaller = {
     log('\n→ 設定繞過防護（.claude/settings.json 的 permissions.deny）');
     await ensureBypassDeny(cwd, log);
 
-    log('\n→ 設定章戳硬閘（.claude/settings.json 的 PreToolUse hook）');
-    await ensureStampGuardHook(cwd, log);
+    log(`\n→ 設定章戳硬閘（.claude/settings.json 的 PreToolUse hook，--plane ${mode}）`);
+    await ensureStampGuardHook(cwd, mode, log);
   },
 
   async configureMcp(ctx: McpContext): Promise<void> {
@@ -383,11 +404,20 @@ async function ensureBypassDeny(cwd: string, log: (msg: string) => void): Promis
 
 /**
  * 把章戳硬閘 hook 合併進專案 `.claude/settings.json` 的 `hooks.PreToolUse`。
- * 不可破壞 merge：保留使用者既有的其他 hook 條目；已存在相同 command 時不寫檔（冪等）。
+ * 不可破壞 merge：保留使用者既有的其他 hook 條目。三態：
+ *   1. 已存在**目標平面**的 command → 不寫檔（冪等）。
+ *   2. 已存在其他 owned 變體（換模式、或從 v0.7.0 無參數字串升級）→ **就地替換** command，
+ *      不新增條目——兩支平面不同的硬閘同時掛著必有一支誤判。
+ *   3. 都沒有 → append 新條目。
  * 只認 command 字串做所有權判定，matcher 被使用者調整過也不覆寫（那是有意識的調整）。
  */
-async function ensureStampGuardHook(cwd: string, log: (msg: string) => void): Promise<void> {
+async function ensureStampGuardHook(
+  cwd: string,
+  mode: InstallMode,
+  log: (msg: string) => void,
+): Promise<void> {
   const settingsPath = path.join(cwd, SETTINGS_JSON_REL);
+  const desired = SPEX_STAMP_HOOK_COMMANDS[mode];
 
   let settings: ClaudeSettingsFile = {};
   const raw = await fs.readFile(settingsPath, 'utf8').catch(() => null);
@@ -407,11 +437,28 @@ async function ensureStampGuardHook(cwd: string, log: (msg: string) => void): Pr
   const hooks = settings.hooks;
   const preToolUse = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as HookMatcher[]) : [];
 
-  const already = preToolUse.some((entry) =>
-    (entry?.hooks ?? []).some((h) => h?.command === SPEX_STAMP_HOOK_COMMAND),
-  );
-  if (already) {
-    log('  章戳硬閘 hook 已存在，不需變更');
+  const owned = (cmd: unknown): cmd is string =>
+    typeof cmd === 'string' && SPEX_STAMP_HOOK_OWNED.includes(cmd);
+
+  if (preToolUse.some((e) => (e?.hooks ?? []).some((h) => h?.command === desired))) {
+    log(`  章戳硬閘 hook 已存在（--plane ${mode}），不需變更`);
+    return;
+  }
+
+  const hasOther = preToolUse.some((e) => (e?.hooks ?? []).some((h) => owned(h?.command)));
+  if (hasOther) {
+    // 換平面：把既有的 spex 條目就地改成目標平面，保留使用者調整過的 matcher 與同條目內其他 hook
+    hooks.PreToolUse = preToolUse.map((entry) => {
+      const inner = Array.isArray(entry?.hooks) ? entry.hooks : [];
+      if (!inner.some((h) => owned(h?.command))) return entry;
+      return {
+        ...entry,
+        hooks: inner.map((h) => (owned(h?.command) ? { ...h, command: desired } : h)),
+      };
+    });
+    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+    log(`  更新 PreToolUse hook 平面: ${desired}`);
+    log(`  寫入: ${settingsPath}`);
     return;
   }
 
@@ -419,19 +466,19 @@ async function ensureStampGuardHook(cwd: string, log: (msg: string) => void): Pr
     ...preToolUse,
     {
       matcher: SPEX_STAMP_HOOK_MATCHER,
-      hooks: [{ type: 'command', command: SPEX_STAMP_HOOK_COMMAND }],
+      hooks: [{ type: 'command', command: desired }],
     },
   ];
   await fs.mkdir(path.dirname(settingsPath), { recursive: true });
   await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  log(`  加入 PreToolUse hook: ${SPEX_STAMP_HOOK_COMMAND}`);
+  log(`  加入 PreToolUse hook: ${desired}`);
   log(`  寫入: ${settingsPath}`);
 }
 
 /**
  * 自 `.claude/settings.json` 移除章戳硬閘 hook。
- * 只移除 command 與 SPEX_STAMP_HOOK_COMMAND 完全相符的條目；使用者自訂 hook 一律保留。
- * 清空後的空結構逐層移除，整檔變空物件時直接刪檔。
+ * 只移除 command 落在 SPEX_STAMP_HOOK_OWNED（兩個平面變體 + v0.7.0 舊字串）內的條目；
+ * 使用者自訂 hook 一律保留。清空後的空結構逐層移除，整檔變空物件時直接刪檔。
  */
 async function removeStampGuardHook(cwd: string, log: (msg: string) => void): Promise<void> {
   const settingsPath = path.join(cwd, SETTINGS_JSON_REL);
@@ -453,7 +500,9 @@ async function removeStampGuardHook(cwd: string, log: (msg: string) => void): Pr
   const kept = original
     .map((entry) => {
       const inner = Array.isArray(entry?.hooks) ? entry.hooks : [];
-      const keptInner = inner.filter((h) => h?.command !== SPEX_STAMP_HOOK_COMMAND);
+      const keptInner = inner.filter(
+        (h) => !(typeof h?.command === 'string' && SPEX_STAMP_HOOK_OWNED.includes(h.command)),
+      );
       return keptInner.length === inner.length ? entry : { ...entry, hooks: keptInner };
     })
     // 條目內的 hooks 全被移除（原本就只有 spex 這一支）→ 整個條目一併移除
