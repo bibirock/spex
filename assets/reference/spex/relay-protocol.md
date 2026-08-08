@@ -9,10 +9,12 @@
 
 | 平面 | tracker 寫入方式 | 驗章硬閘落在哪 |
 |---|---|---|
-| **非沙盒**（預設） | skill 直接呼叫 MCP（`TRACKER.*`） | Claude Code 的 PreToolUse hook（`spex-stamp-guard.sh`） |
-| **沙盒**（`spex-sandbox-init` 生成、零憑證） | 沙盒**寫不到** tracker，只能吐 `[TRACKER-ACTION]` 區塊，由 host 端 relay 代執行 | relay 執行檔自身（本檔的接線契約） |
+| **非沙盒**（`spex init` 預設） | skill 直接呼叫 MCP（`TRACKER.*`） | Claude Code 的 PreToolUse hook（`spex-stamp-guard.sh --plane agent`） |
+| **沙盒**（`spex init --mode sandbox` + `spex-sandbox-init`、零憑證） | 沙盒**寫不到** tracker，只能吐 `[TRACKER-ACTION]` 區塊，由 host 端 relay 代執行 | relay 執行檔自身（本檔的接線契約） |
 
 沙盒平面的核心限制：容器沒有 PAT／MCP，也連不出去。所以「決定要寫什麼」在沙盒、「實際寫入」在 host——中間這段就是 relay。
+
+**host 端 hook 在沙盒平面的角色**：`spex init --mode sandbox` 會把章戳硬閘切到 `--plane sandbox`。它**不再**拿 host session transcript 驗章（沙盒內派發的 challenger 事件不在那條流裡，驗了必然假 FAIL），改為擋下「host 直接以 MCP 發出含章留言」這條源頭，把含章寫入唯一化到 relay。換言之：**本平面的裁定者只有 relay**，hook 負責讓人繞不過 relay。
 
 ---
 

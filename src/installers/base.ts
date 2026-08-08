@@ -84,6 +84,34 @@ export const SPEX_BYPASS_COMMANDS: readonly string[] = [
   'gh api',
 ];
 
+/**
+ * 安裝版本（平面）——決定裝哪些資產、以及章戳鏈的驗章硬閘落在哪裡。
+ * - `agent`（預設）：無沙盒。寫碼與驗證都在同一份原始碼樹，章源＝本 session 事件流，
+ *   驗章硬閘＝Claude Code 的 PreToolUse hook（`spex-stamp-guard.sh --plane agent`）。
+ * - `sandbox`：加裝 Docker 沙盒協定與 relay。章源＝host 影子流（容器物理寫不到），
+ *   驗章硬閘＝relay 執行檔自身；hook 轉為 `--plane sandbox`，只擋「host 直發含章留言」。
+ */
+export type InstallMode = 'agent' | 'sandbox';
+
+/**
+ * 只有沙盒平面用得到的 skill——`agent` 模式不安裝。
+ * 此常數是模式過濾的單一來源（`transformers/install-mode.ts` 依它篩選）。
+ */
+export const SPEX_SANDBOX_ONLY_SKILLS: readonly string[] = [
+  'spex-sandbox-init',
+  'spex-relay-init',
+];
+
+/**
+ * 只有沙盒平面用得到的 reference（比對 `ReferenceSource.relativePath` 前綴）。
+ * 注意 `spex/scripts/` 四支腳本（challenge-audit / transcript-to-stream /
+ * spex-stamp-guard / task-draft-lint）**兩種模式都要裝**，不列在此。
+ */
+export const SPEX_SANDBOX_ONLY_REFERENCES: readonly string[] = [
+  'sandboxes/',
+  'spex/relay-protocol.md',
+];
+
 export interface McpServerDefinition {
   id: string;
   /** 安裝引導顯示用的中文描述 */
@@ -121,6 +149,11 @@ export interface McpServerDefinition {
 export interface InstallContext {
   /** 安裝目標的專案根目錄 */
   cwd: string;
+  /**
+   * 安裝版本。資產過濾與沙盒段落剝除已在上游（`commands/init.ts`）完成，
+   * installer 只用它決定 hook 變體與 log 文案。
+   */
+  mode: InstallMode;
   /** 使用者選擇要安裝的 skill 列表 */
   skills: SkillSource[];
   /** 使用者選擇要安裝的 reference 檔案 */

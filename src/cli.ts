@@ -26,12 +26,29 @@ program
   .command('init')
   .description('初始化：安裝 skills、reference、temp 到當前專案')
   .option('--agent <id>', '指定 agent：claude-code | github-copilot | codex（不指定則互動式選擇）')
+  .option(
+    '--mode <mode>',
+    '安裝版本：agent（預設，無沙盒）| sandbox（Docker 沙盒，token 開銷 2 倍以上）',
+  )
+  .option('--sandbox', '等同 --mode sandbox', false)
   .option('--cwd <path>', '目標專案根目錄', process.cwd())
   .option('--force', '覆寫已存在的檔案', false)
   .option('-y, --yes', '跳過互動式提問，使用預設選項', false)
   .action(async (opts) => {
+    // --sandbox 是 --mode sandbox 的語法糖；兩者同時給且互相矛盾時視為使用者手誤，直接報錯。
+    if (opts.sandbox && opts.mode && opts.mode !== 'sandbox') {
+      console.error(`--sandbox 與 --mode ${opts.mode} 衝突，請擇一`);
+      process.exit(1);
+    }
+    const mode = opts.sandbox ? 'sandbox' : opts.mode;
+    if (mode !== undefined && mode !== 'agent' && mode !== 'sandbox') {
+      console.error(`未知的安裝版本：${mode}（僅支援 agent | sandbox）`);
+      process.exit(1);
+    }
+
     await runInit({
       agent: opts.agent,
+      mode,
       cwd: opts.cwd,
       force: opts.force,
       yes: opts.yes,

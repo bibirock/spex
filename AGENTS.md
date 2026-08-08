@@ -31,9 +31,9 @@ npm test                 # node --test dist/**/*.test.js（注意：目前尚無
 資料流：`assets/` 的 skills / reference / **rules** → 由 command 載入 → 交給選定的 installer → 依各 agent 格式寫入目標專案。
 
 - **`src/cli.ts`** — commander 進入點，定義 `init / uninstall / mcp` 三個子指令，各自呼叫 `src/commands/*.ts`。
-- **`src/installers/base.ts`** — 核心抽象。定義 `AgentInstaller` 介面（`detect / paths / install / configureMcp`）、`SkillSource` / `ReferenceSource` / `RuleSource` 三種資產型別，與一個模組級 **registry**。也放共用工具：`safeWriteFile`、`ensureSpexTempGitignore`（只確保 `spex-temp/` 被 `.gitignore` 忽略，**不建立資料夾**——該目錄改為 on-demand scratch，由 skill 用時才 `mkdir`、讀完 `rm -rf` 連資料夾移除）。
+- **`src/installers/base.ts`** — 核心抽象。定義 `AgentInstaller` 介面（`detect / paths / install / configureMcp`）、`SkillSource` / `ReferenceSource` / `RuleSource` 三種資產型別、**`InstallMode` 與沙盒專屬資產清單**（見下方「安裝版本」），與一個模組級 **registry**。也放共用工具：`safeWriteFile`、`ensureSpexTempGitignore`（只確保 `spex-temp/` 被 `.gitignore` 忽略，**不建立資料夾**——該目錄改為 on-demand scratch，由 skill 用時才 `mkdir`、讀完 `rm -rf` 連資料夾移除）。
 - **每個 agent 一個 installer 檔** — `claude-code.ts`、`github-copilot.ts`、`codex.ts`，檔尾呼叫 `registerInstaller(...)` 自我註冊。command 透過 **side-effect import**（`import '../installers/claude-code.js'`）把它們塞進 registry，再用 `listInstallers()` / `getInstaller(id)` 取用。
-- **`src/transformers/`** — `parse-skill.ts` 用 gray-matter 從 assets 讀 SKILL.md，並提供 `loadSkillsFromAssets` / `loadReferencesFromAssets` / `loadRulesFromAssets` 三個載入器；`to-copilot-prompt.ts` 把 Claude 的 SKILL.md 轉成 Copilot 的 `.prompt.md`（換 frontmatter、加手動觸發提示，並把 body 內 `.claude/reference/`、`.claude/rules/` 路徑改寫為 Copilot 的 `.spex/`，**skill 跨檔引用** `.claude/skills/<name>/SKILL.md` 改寫為 `.github/prompts/<name>.prompt.md`，避免 skill 互相引用時斷鏈）。這是「一份來源餵兩種 agent」的關鍵轉換層。
+- **`src/transformers/`** — `parse-skill.ts` 用 gray-matter 從 assets 讀 SKILL.md，並提供 `loadSkillsFromAssets` / `loadReferencesFromAssets` / `loadRulesFromAssets` 三個載入器；**`install-mode.ts`** 依安裝版本過濾資產與剝除沙盒段落（見下方「安裝版本」）；`to-copilot-prompt.ts` 把 Claude 的 SKILL.md 轉成 Copilot 的 `.prompt.md`（換 frontmatter、加手動觸發提示，並把 body 內 `.claude/reference/`、`.claude/rules/` 路徑改寫為 Copilot 的 `.spex/`，**skill 跨檔引用** `.claude/skills/<name>/SKILL.md` 改寫為 `.github/prompts/<name>.prompt.md`，避免 skill 互相引用時斷鏈）。這是「一份來源餵兩種 agent」的關鍵轉換層。
 - **`src/mcp/servers.ts`** — 可安裝的 MCP server 目錄，**手動維護**。刻意不從 `~/.claude.json` 自動抓，避免把 token 同步進 repo。各 installer 的 `configureMcp` 各自序列化：Claude Code 寫專案根的 `.mcp.json`（`${VAR}` 佔位），Copilot 寫 `.vscode/mcp.json`（`${env:VAR}` 佔位，由 `toVsCodePlaceholder` 轉換），Codex 寫 `.codex/config.toml`（TOML；無 `${VAR}` 內插，改用 `env_vars` 轉發本機環境變數、http 用 `bearer_token_env_var`，缺的才 append、不覆寫既有區塊）。playwright server 預設關閉（`defaultEnabled: false`）。
 
 各 agent 落地位置差異：Claude Code → `.claude/skills/<name>/SKILL.md` + `.claude/reference/` + `.claude/rules/`；Copilot → `.github/prompts/<name>.prompt.md` + `.spex/reference/` + `.spex/rules/` + `.github/copilot-instructions.md`；Codex → `.codex/skills/<name>/SKILL.md` + `.codex/reference/` + `.codex/rules/` + 根目錄 `AGENTS.md`（skill body 內 `.claude/` 路徑由 `codex.ts` 改寫為 `.codex/`）。
@@ -50,13 +50,31 @@ npm test                 # node --test dist/**/*.test.js（注意：目前尚無
 - implement 主 agent 依序執行任務、不派 subagent（token 策略）；品質審查（code-reviewer、`/review`）與 selfcheck 驗證者不在此限。
 - 任務相依以 ADO 原生 Predecessor/Successor 連結為準（adapter 操作 `linkDependency` / `getDependencies`），任務留言「依賴」欄為 fallback。
 
+## 安裝版本（agent / sandbox 雙平面）
+
+`spex init` 有兩種安裝版本（`--mode agent|sandbox`，`--sandbox` 為語法糖），對應章戳鏈的兩個平面。**選錯版本 = 章源與硬閘對不上 = 假 FAIL**，動這塊時務必先讀懂下表。
+
+| 版本 | tracker 寫入 | 章源 | 驗章硬閘 |
+|---|---|---|---|
+| `agent`（預設） | skill 直接呼叫 MCP | 本 session 事件流 `~/.claude/projects/` | Claude Code PreToolUse hook `spex-stamp-guard.sh --plane agent` |
+| `sandbox` | 容器吐 `[TRACKER-ACTION]` → host relay 代寫 | host 影子流（容器物理寫不到） | relay 執行檔自身；hook 轉 `--plane sandbox`，只擋 host 直發的含章留言 |
+
+實作分佈：
+
+- **單一來源在 `base.ts`**：`InstallMode`、`SPEX_SANDBOX_ONLY_SKILLS`（`spex-sandbox-init` / `spex-relay-init`）、`SPEX_SANDBOX_ONLY_REFERENCES`（`sandboxes/` / `spex/relay-protocol.md`）。要增減沙盒專屬資產只改這兩張清單。**`reference/spex/scripts/` 四支腳本兩種模式都裝**，不列入清單。
+- **`transformers/install-mode.ts`** 集中做過濾與剝除，讓三個 installer 保持模式無關（只有 `claude-code.ts` 因為要選 hook 變體才用到 `ctx.mode`）。`applyInstallMode()` 在 `commands/init.ts` 載入資產後、`installer.install()` 前套用一次。
+- **圍欄機制**：共用資產（`spex-stamp/SKILL.md`、`rules/sdd-workflow.md`）裡描述沙盒平面的段落用 `<!-- spex:sandbox-only:start / end -->` 包起來，agent 模式安裝時剝除。支援**整行圍欄**（跨多行）與**行內圍欄**（表格儲存格內只拿掉半句）。skill frontmatter 不套圍欄——`description` 一律寫成平面中性措辭。rule frontmatter 的 `skills:` 由 `withoutSandboxSkills()` 過濾掉沙盒 skill，避免產生指向不存在檔案的 scope。
+- **hook 的三態註冊**：命令常數 `SPEX_STAMP_HOOK_COMMANDS`、所有權清單 `SPEX_STAMP_HOOK_OWNED`（另含 v0.7.0 無參數舊字串）。`ensureStampGuardHook` 同平面冪等不寫檔／不同 owned 變體**就地替換 command**／都沒有才 append。**絕不可讓兩個平面的 hook 同時掛著**。Codex 無 hook 機制，`mode === 'sandbox'` 時只輸出一行誠實標註。
+- **沙盒版有兩支 PreToolUse hook 並存**（僅 Claude Code）：`spex-stamp-guard.sh` 守章戳鏈、`sandbox-guard.sh` 守雙平面邊界，任一 exit 2 即擋；合併規則「只增不換」寫在 `settings.sandbox-snippet.json.tmpl` 的 `_comment_two_hooks` 與 `sandboxes/README.md`。
+- **⚠️ 不可誤剝**：`sdd-workflow.md` 的 `## MCP-only` 提到 Codex 的 `sandbox_mode` / `approval_policy`，那是 Codex CLI **自己的沙盒設定**，與 Docker 沙盒平面無關，絕對不能加圍欄。改完務必跑一次剝除後的殘留檢查。
+
 ## PR 開立防護（claude-code installer）
 
 `claude-code.ts` 的 `install()` 會把 `SPEX_PR_ASK_RULES`（開 PR 的 MCP 工具與 `az repos pr create` / `gh pr create`）merge 進目標專案 `.claude/settings.json` 的 `permissions.ask`：不可破壞 merge（保留使用者設定）、三條齊全時冪等不寫檔、壞 JSON 先備份 `.bak`。`uninstall --full` 只移除與常數**完全相符**的字串（常數即所有權清單），空結構逐層刪、整檔空才刪檔。改規則清單只改 `SPEX_PR_ASK_RULES` 一處。Copilot / Codex 無對應機制（僅文字層；Codex 改走下方 MCP-only 中層的 `sandbox_mode` / `approval_policy`）。
 
 ## MCP-only 繞過防護（中層，三 agent 落地）
 
-防 AI 略過受控 MCP/TRACKER 直打底層 API/CLI。**單一來源**為 `base.ts` 的 `SPEX_BYPASS_COMMANDS`（`curl` / `wget` / `az boards` / `gh api`），各 installer 翻譯成原生格式：Claude Code → `permissions.deny`（`ensureBypassDeny` / `removeBypassDeny`，完全鏡射 PR-ask 那對函式的 merge/冪等/.bak/所有權清單邏輯，衍生清單 `SPEX_BYPASS_DENY_RULES = Bash(<cmd>:*)`）；Copilot → `.vscode/settings.json` 的 `github.copilot.chat.agent.terminal.denyList`（`ensureCopilotDenyList`，多字指令用 regex 鍵）；Codex → `.codex/config.toml` 的 `sandbox_mode` + `approval_policy`（`ensureCodexSandbox`，top-level key prepend 確保在任何 `[table]` 之前、已存在即略過不覆寫）。刻意**不**封 `az repos pr create` / `gh pr create`（那條走 `permissions.ask`，deny 不得蓋掉）。**這是中層**：對 compound/wrapper/env-var 變體脆弱；不可繞過的執行期硬擋（Claude Code `PreToolUse` exit-2 hook）尚未實作、屬另案，僅 Claude Code 具該能力。政策章節在 `assets/rules/sdd-workflow.md` 的 `## MCP-only`（含三 agent 不等價的誠實標註）。改清單只改 `SPEX_BYPASS_COMMANDS` 一處。
+防 AI 略過受控 MCP/TRACKER 直打底層 API/CLI。**單一來源**為 `base.ts` 的 `SPEX_BYPASS_COMMANDS`（`curl` / `wget` / `az boards` / `gh api`），各 installer 翻譯成原生格式：Claude Code → `permissions.deny`（`ensureBypassDeny` / `removeBypassDeny`，完全鏡射 PR-ask 那對函式的 merge/冪等/.bak/所有權清單邏輯，衍生清單 `SPEX_BYPASS_DENY_RULES = Bash(<cmd>:*)`）；Copilot → `.vscode/settings.json` 的 `github.copilot.chat.agent.terminal.denyList`（`ensureCopilotDenyList`，多字指令用 regex 鍵）；Codex → `.codex/config.toml` 的 `sandbox_mode` + `approval_policy`（`ensureCodexSandbox`，top-level key prepend 確保在任何 `[table]` 之前、已存在即略過不覆寫）。刻意**不**封 `az repos pr create` / `gh pr create`（那條走 `permissions.ask`，deny 不得蓋掉）。**這是中層**：對 compound/wrapper/env-var 變體脆弱。Claude Code 的 `PreToolUse` exit-2 硬擋**已在章戳鏈落地**（`spex-stamp-guard.sh`，見「安裝版本」段），但那支 hook 只管章戳與事件流保護，**未涵蓋本節的繞過指令家族**；把繞過封鎖也移進 hook 屬另案，且僅 Claude Code 具該能力。政策章節在 `assets/rules/sdd-workflow.md` 的 `## MCP-only`（含三 agent 不等價的誠實標註）。改清單只改 `SPEX_BYPASS_COMMANDS` 一處。
 
 ## 教訓閉環（lessons-learned loop）
 
@@ -72,6 +90,7 @@ npm test                 # node --test dist/**/*.test.js（注意：目前尚無
 
 1. 新增 `src/installers/<name>.ts`，實作 `AgentInstaller` 介面，檔尾 `registerInstaller(...)`。
 2. 在 `src/commands/init.ts`、`uninstall.ts`、`mcp.ts` 補一行 side-effect import（registry 靠 import 才會被填充）。新 installer 必須實作 `AgentInstaller.uninstall(ctx)`，否則無法被 `spex uninstall` 解除安裝。
+3. 處理 `ctx.mode`：資產過濾與段落剝除已在上游做完，installer 只需決定「有沒有 hook 機制」。有的話依 `mode` 選 hook 變體（比照 `claude-code.ts` 的 `SPEX_STAMP_HOOK_COMMANDS`）；沒有的話在 `mode === 'sandbox'` 時輸出一行誠實標註（比照 Copilot / Codex），不得讓使用者以為裝了等價防護。
 
 主流程（commands）不需要其他改動。
 

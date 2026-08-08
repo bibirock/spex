@@ -1,6 +1,6 @@
 ---
 name: spex-stamp
-description: 章戳鏈驗章器（確定性防偽閘）。在寫留言／開卡、階段交棒、開 PR 前稽核任何 challenge / verifier 的 PASS 宣稱：對事件流（沙盒影子流或 hook 帳本）執行 challenge-audit.py，無章、章面不符、輪次超限、內容綁定不符、一章重用一律擋下。前置：challenge / verifier 已派發並留下事件紀錄。後續：回呼叫流程（task / implement / selfcheck / pull-request / schedule）。
+description: 章戳鏈驗章器（確定性防偽閘）。在寫留言／開卡、階段交棒、開 PR 前稽核任何 challenge / verifier 的 PASS 宣稱：對本平面的事件流執行 challenge-audit.py，無章、章面不符、輪次超限、內容綁定不符、一章重用一律擋下。前置：challenge / verifier 已派發並留下事件紀錄。後續：回呼叫流程（task / implement / selfcheck / pull-request / schedule）。
 ---
 
 # Spex: Stamp — 章戳鏈驗章器
@@ -13,7 +13,7 @@ description: 章戳鏈驗章器（確定性防偽閘）。在寫留言／開卡�
 | -------- | --------------------------------------------------------------- | -------------------------------------------------- |
 | 蓋章者   | `challenger` / `verifier` agent（詰問完成後輸出末行章面）       | 全新上下文、唯讀；章面格式見 `.claude/agents/challenger.md` |
 | 章號     | Agent 派發事件的 `tool_use_id`（`toolu_…`）或回傳的 `agentId`   | harness 生成，執行模型無法鑄造、天然不重複         |
-| 章的載體 | 事件流（見下方「章源」）——一律位於**目標 repo 之外**            | 執行者寫不到（沙盒）／受 harness 與 deny 保護（hook 帳本） |
+| 章的載體 | 事件流（見下方「章源」）——一律位於**目標 repo 之外**            | 由 harness 寫入、受硬閘保護，執行者改不到               |
 | 內容綁定 | 章面 `sha256`（NFC→空白摺疊→trim→sha256 前 16 hex）             | 舊章蓋不了改過的內容（防重放）                     |
 | 消耗帳   | 一章一用（audit S6 + 呼叫方記帳）                               | 用過的章不能再支持第二個宣稱                       |
 
@@ -32,17 +32,22 @@ description: 章戳鏈驗章器（確定性防偽閘）。在寫留言／開卡�
 git status --porcelain .claude/reference/spex/scripts
 ```
 
-驗章器本身（`challenge-audit.py` / `transcript-to-stream.mjs`）有非預期的本地變更 → **停止**：稽核工具被動過等於稽核結果不可信，本輪全部產物不信任，呈報後重來。沙盒平面另有一層保險：驗章跑的是 `$SHADOW_DIR/tools/` 的 host-only 快照，不是掛載區內的檔案。
+驗章器本身（`challenge-audit.py` / `transcript-to-stream.mjs`）有非預期的本地變更 → **停止**：稽核工具被動過等於稽核結果不可信，本輪全部產物不信任，呈報後重來。
+<!-- spex:sandbox-only:start -->
+沙盒平面另有一層保險：驗章跑的是 `$SHADOW_DIR/tools/` 的 host-only 快照，不是掛載區內的檔案。
+<!-- spex:sandbox-only:end -->
 
 ### Phase 2: 定位章源
 
 | 平面 | 章源 | 驗章器 |
 |---|---|---|
-| 沙盒（`sandbox/dispatch.sh` 派工） | 影子流：`${DISPATCH_SHADOW_DIR:-~/.sandbox-shadow/<repo>}/<stem>.result.md`（`dispatch-watchdog-host.sh` 即時 tee，沙盒物理不可寫） | `$SHADOW_DIR/tools/challenge-audit.py`（host-only 快照） |
+<!-- spex:sandbox-only:start -->
+| 沙盒（`sandbox/dispatch.sh` 派工） | 影子流：`${DISPATCH_SHADOW_DIR:-~/.sandbox-shadow/<repo>}/<stem>.result.md`（`dispatch-watchdog-host.sh` 即時 tee，沙盒物理不可寫） | `$SHADOW_DIR/tools/challenge-audit.py`（host-only 快照）——驗章由 relay 執行檔呼叫，host 端的 PreToolUse hook 此時跑在 `--plane sandbox`，只擋 host 直發的含章留言 |
+<!-- spex:sandbox-only:end -->
 | 非沙盒（Claude Code） | 本 session transcript `~/.claude/projects/<slug>/<sessionId>.jsonl` ＋ 子代理事件 `<sessionId>/subagents/agent-<agentId>.jsonl`（皆由 harness 寫入、位於 repo 之外；歸屬記於 `agent-<agentId>.meta.json` 的 `agentType` / `toolUseId`） | `.claude/reference/spex/scripts/challenge-audit.py`，事件流先經 `transcript-to-stream.mjs` 正規化 |
 | 非沙盒（Codex / Copilot） | **無事件流可驗** | — |
 
-**Claude Code 平面的正規化步驟**（transcript 與影子流形狀不同，audit 只認後者）：
+**Claude Code 平面的正規化步驟**（transcript 的事件形狀與 audit 認的 NDJSON 不同，須先轉換）：
 
 ```
 node .claude/reference/spex/scripts/transcript-to-stream.mjs <transcript.jsonl> > <stream.ndjson>
@@ -52,15 +57,17 @@ node .claude/reference/spex/scripts/transcript-to-stream.mjs <transcript.jsonl> 
 
 **鐵則**：
 
+<!-- spex:sandbox-only:start -->
 - 沙盒平面正式驗章**不得**以 `sandbox/tasks/` 掛載區鏡像替代（沙盒可竄改）。找不到影子流 → 以 `--legacy` 補稽核並明標「僅供人工複核」，不得當硬證據放行。
-- Claude Code 平面另有 **PreToolUse 章戳硬閘**（`spex-stamp-guard.sh`，spex 安裝時寫入 `.claude/settings.json`）：含章戳宣稱的 tracker 寫入未過驗章一律 exit 2 拒發，且 `~/.claude/projects/` 不得被 Write / Edit / Bash 改寫。這層由 harness 執行、模型停不掉——本 skill 是它的規範面與人工稽核面。移除該 hook 屬有意識的防護降級，須在當次任務鏈留痕。
+<!-- spex:sandbox-only:end -->
+- Claude Code 平面另有 **PreToolUse 章戳硬閘**（`spex-stamp-guard.sh`，spex 安裝時寫入 `.claude/settings.json`，命令帶 `--plane` 標明本安裝所屬平面）：`--plane agent` 時，含章戳宣稱的 tracker 寫入未過驗章一律 exit 2 拒發；兩個平面都禁止 `~/.claude/projects/` 被 Write / Edit / Bash 改寫。這層由 harness 執行、模型停不掉——本 skill 是它的規範面與人工稽核面。移除該 hook 屬有意識的防護降級，須在當次任務鏈留痕。
 - Codex / Copilot 無 hook 與事件流，**沒有可驗的章**——此時 `spex-challenge` 仍應執行（詰問本身有價值），但交棒憑證只有 `task-draft-lint` 的確定性結果；必須在留言誠實標註「本環境無章可驗」，不得宣稱驗章通過。
 
 ### Phase 3: 執行驗章
 
 ```
 python3 <驗章器路徑> <章源檔...>            # strict（預設）
-python3 <驗章器路徑> --legacy <舊流>        # 無影子流的歷史紀錄補稽核
+python3 <驗章器路徑> --legacy <舊流>        # 無正規事件流時的歷史紀錄補稽核
 ```
 
 跨 resume 的多段事件流可一次帶多個檔（依派工先後順序），腳本會合併判定。
@@ -91,7 +98,9 @@ python3 <驗章器路徑> --legacy <舊流>        # 無影子流的歷史紀錄
 
 ## Red Flags
 
+<!-- spex:sandbox-only:start -->
 - ❌ 拿掛載區鏡像當驗章來源（＝驗了執行者可竄改的東西）
+<!-- spex:sandbox-only:end -->
 - ❌ exit≠0 仍轉發、或以「宣稱看起來合理」人工改判（驗章結果不可被 LLM 覆寫）
 - ❌ 用 `--legacy` 結果當硬證據放行新流
 - ❌ 跳過 Phase 1 防竄改檢查直接跑稽核腳本
@@ -99,6 +108,6 @@ python3 <驗章器路徑> --legacy <舊流>        # 無影子流的歷史紀錄
 
 ## Verification
 
-- [ ] 驗章來源為影子流或 hook 帳本（或已明標 legacy／無章可驗）
+- [ ] 驗章來源為本平面的正規章源（或已明標 legacy／無章可驗）
 - [ ] exit code 已記錄；exit≠0 時產物未被寫入且已記帳
 - [ ] audit JSON 已保留（章號消耗帳可追溯）
