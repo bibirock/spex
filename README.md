@@ -41,7 +41,7 @@
 
 ## 這是什麼 · 核心理念
 
-`spex` 是一支 CLI，把一套 SDD 工作流（12 個 skills + reference + 專案規則 rules + MCP 設定）裝進任何專案。核心設計：
+`spex` 是一支 CLI，把一套 SDD 工作流（12 個 skills，沙盒版另加 2 個 + reference + 專案規則 rules + MCP 設定）裝進任何專案。核心設計：
 
 - **一份來源、多 agent 落地**：skills/reference/rules 只維護一份，安裝時動態轉換成各 agent 的原生格式（Claude Code 的 `.claude/`、Copilot 的 `.github/` + `.spex/`、Codex 的 `.codex/`）。
 - **tracker 為唯一事實來源、adapter 化可替換**：流程的「狀態、證據、續行」都落在 tracker 的 work item / issue 留言鏈，不依賴本機檔案——壓縮 / 換手 / 斷線後由下一輪重新盤點自動還原。tracker 本身透過 `TRACKER.*` 抽象介面存取，目前內建 **Azure DevOps** 與 **local-file**（無 tracker 時的純檔案模式）兩個 adapter，用 `create-adapter` skill 即可新增 Jira / Linear / GitHub Issues 等其他專案管理平台的 adapter，SDD 流程本身不綁死任何單一平台（詳見[支援的 Tracker](#支援的-tracker)）。
@@ -399,18 +399,7 @@ flowchart TD
 
 **前置**：各卡規格已寫入 description → **後續**：人類 reviewer 審單一批次 PR
 
-### 9. `spex-benchmark` — 成本與目標量測（工具型）
-
-**角色**：量測已完成 SDD 工作的 token 成本與 4 大目標進度（**手動觸發，不被自動鏈呼叫；不實作、不開 PR**）。
-
-| Phase | 做什麼                                                                                                    |
-| ------- | -------------------------------------------------------------------------------------------------------------- |
-| 0     | 確認各卡估點 + USD→TWD 匯率（讀不到 → 請使用者提供或填 N/A）                                              |
-| 1     | 以「觸發本 skill 的訊息 timestamp」為截點，加總截點前 token / 成本（排除本 skill 自身；ccusage 交叉驗證） |
-| 2     | 產出基準表 + 4 大目標 to-do；$/點 對團隊自訂目標判定                                                      |
-| 3     | 經確認後 `recordBenchmark` 寫入 Notion **頁面內文**（表格 / to-do 可渲染）                                |
-
-### 10. `create-adapter` — 新增 Tracker Adapter（工具型）
+### 9. `create-adapter` — 新增 Tracker Adapter（工具型）
 
 **呼叫**：`/create-adapter`（folder 與 skill 名稱均為 `create-adapter`，不帶 `spex-` 前綴）。
 
@@ -418,19 +407,19 @@ flowchart TD
 
 流程：讀 `adapters/README.md` 協定 → 12 小節需求問答（12 個必填 `TRACKER.*` 操作可行性、分支前綴、規格建卡欄位對照、relay 執行檔樁檔可行性）→ 對照既有範本起草 → relay 執行檔樁檔生成（或誠實降級）→ 安全可加性設定編輯（`.mcp.json` / 合併通道的 `permissions.deny` 與 merge-guard 涵蓋檢查 / 分支命名參數化）→ 安全敏感檢查清單（不自動套用）→ 同步 README 清單 → 展示確認 → 寫入。完成後於 `sdd-workflow.md` 改 `Tracker Adapter:` 一行即可切換分支前綴與欄位映射；tracker 寫入的沙盒 dispatch 管線是否可用，仍取決於是否已補齊 relay 執行檔（見 v0.7.0 升級注意）。
 
-### 11. `commit-message` — Commit 訊息（工具型）
+### 10. `commit-message` — Commit 訊息（工具型）
 
 **呼叫**：`/commit-message`（folder 與 skill 名稱均為 `commit-message`，不帶 `spex-` 前綴）。
 
 **角色**：依 Conventional Commits 產生繁中 commit 訊息。串行 8 步：取子卡 ID（tracker 讀回、禁推斷）→ 判 scope/type → 蒐集異動 → 寫描述/本文/footer → 輸出 `type(ID): [scope] 繁中描述`。
 
-### 12. `spex-sandbox-init` — 建立語言無關的 Docker 沙盒（工具型）**｜僅沙盒版**
+### 11. `spex-sandbox-init` — 建立語言無關的 Docker 沙盒（工具型）**｜僅沙盒版**
 
 **角色**：架構設計師，依 Sandbox Profile 協定為任意語言/技術棧的專案生成雙平面 Docker 沙盒（Docker 隔離、egress 防火牆白名單、PreToolUse guard、確定性驗證束），與 `create-adapter` 是姊妹 skill——本 skill 負責語言/技術棧軸，`create-adapter` 負責 tracker 軸。
 
 流程：**Phase 0 章戳硬閘平面檢查**（確認 hook 已在 `--plane sandbox`，否則要求先重跑 `spex init --mode sandbox`）→ 讀 `sandboxes/README.md` 協定 → 9 小節需求問答（基底映像、套件管理器、sidecar、驗證束、防火牆、軸 2/3 可行性、格式化/lint、檔案落點）→ 若已有其他 profile 則對照起草，否則直接依協定的核心 Schema 起草 → 執行 `render-profile.mjs --dry-run` 試跑 → 同步 README 清單 → 展示確認 → 實際生成沙盒檔案。**產出的是可運作的沙盒，不只是文件**——`render-profile.mjs` 是本 skill 委派實際檔案渲染的獨立零依賴 Node 腳本，避免 LLM 手動轉譯樣板內容時掉字走樣。
 
-### 13. `spex-relay-init` — 建立 tracker 寫入通道（工具型）**｜僅沙盒版**
+### 12. `spex-relay-init` — 建立 tracker 寫入通道（工具型）**｜僅沙盒版**
 
 **角色**：架構設計師，依 `reference/spex/relay-protocol.md` 引導生成該專案的 relay 執行檔——沙盒零憑證寫不到 tracker，只能吐 `[TRACKER-ACTION]` 區塊由 host 端 relay 逐字代寫。relay 同時是**沙盒平面的驗章硬閘**：送出前對影子流跑 `challenge-audit.py`，未過以非零 exit 拒發。
 
@@ -617,7 +606,7 @@ AI 工作流最大的可靠度缺口不是「會犯錯」，而是**同一類錯
 | PreToolUse 硬閘（Claude Code） | agent 版 **2 支**（`spex-stamp-guard.sh --plane agent` + `spex-merge-guard.sh`）；sandbox 版 **3 支**（stamp guard 轉 `--plane sandbox`，另加手動合併的 `sandbox-guard.sh`）。各自獨立執行、任一 exit 2 即擋；合併設定只增不換。移除／降級須在當次任務鏈留痕 |
 | SDD 流程可靠度   | 獨立驗收（確定性 Gate + 對抗式判讀）+ **教訓閉環**（反覆失敗升級為確定性硬防護，不依賴模型自律）+ DoD「測試未弱化」 |
 | 任務相依編排     | `task` 寫 tracker 原生 Predecessor/Successor 連結；`implement` 建 DAG 拓撲排序依序執行；`schedule` 批次編排         |
-| Token 成本       | MVP-only 紀律 + 增量看板；`benchmark` 量測每 Scrum point 成本                                                       |
+| Token 成本       | MVP-only 紀律 + 增量看板；估點供每 Scrum point 成本換算（見[估點與成本](#估點與成本)）                              |
 
 ---
 
@@ -689,7 +678,7 @@ spec-driven development 目前最具代表性的開源工具是 [GitHub Spec Kit
 - **四維度**綜合落點（非加總）：實作面 / 狀態與契約 / 整合面 / 驗證工作量。
 - **單卡上限 13**；≥20 必須拆卡（20 僅留給 rollup 父卡）。
 - **估點不影響 selfcheck 判定**（驗收依 AC，不依點數）。
-- 成本量測：互動 session `/cost`；headless `claude -p --output-format json` 回傳 `total_cost_usd`；`benchmark` 換算每 Scrum point 成本。
+- 成本量測：互動 session `/cost`；headless `claude -p --output-format json` 回傳 `total_cost_usd`；以估點換算每 Scrum point 成本。
 
 ---
 
@@ -754,7 +743,7 @@ node bin/spex.js --help   # 本地執行 CLI（等同 npm start）
 - **v0.9.0**：**PR 政策反轉——防護從「開立」搬到「合併」**。
   1. **開 PR 回歸一般流程**：不再有開立前的人為確認雙路徑與「授權本次/本批次全自動開立 PR」語句機制；`spex-schedule` 的 plan 階段也不再收集 PR 預授權。重跑 `spex init` 會**自動移除**舊版寫在 `permissions.ask` 的三條開 PR 規則（使用者自訂的 ask 規則保留）。
   2. **合併改為無逃生口硬擋**：新增 `permissions.deny` 的合併 CLI 規則與第二支 PreToolUse hook `spex-merge-guard.sh`（MCP 參數層 + `git push` 目標分支判定）。**互動 session 也不能合併**——合併請到平台 UI 操作。若你的專案用不同的分支命名，設 `SPEX_PROTECTED_BRANCHES=<逗號分隔>` 覆寫保護分支清單。
-  3. `sdd-workflow.md` 新增治理必備章節 `## PR 合併控管`（原 `## PR 開立控管` 保留但瘦身）；benchmark 的 Goal1 改為檢核合併控管。
+  3. `sdd-workflow.md` 新增治理必備章節 `## PR 合併控管`（原 `## PR 開立控管` 保留但瘦身）。
 - **v0.8.0**：`spex init` 分成 **agent（預設，無沙盒）/ sandbox** 兩種安裝版本（`--mode` / `--sandbox`）。三點要注意：
   1. **既有專案重跑 `spex init` 會落到 agent 版**，共用資產裡的沙盒段落會被剝除；但 `init` 只寫不刪，先前裝的 `spex-sandbox-init` / `sandboxes/` 等資產**不會**自動移除——要清乾淨請先 `spex uninstall` 再重裝。
   2. **正在用沙盒的專案請改跑 `spex init --mode sandbox`**。章戳硬閘 hook 現在帶 `--plane` 參數；停在舊的無參數字串或 `--plane agent` 會讓 host 拿 session transcript 去驗沙盒內產生的章，**必然假 FAIL**。重跑會就地替換同一條目，不會重複附加。

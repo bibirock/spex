@@ -441,7 +441,7 @@ params: {
 
 ## `TRACKER.recordBenchmark(params)`
 
-> **選用操作，非 12 必填核心**；目前僅 `spex-benchmark` skill 使用，adapter 可不實作（未實作 → 回 `success: false`，由 benchmark skill fallback 為輸出 Markdown 供使用者手動貼上）。未列入頂部「Skills 引用 Adapter 規範」12 核心對照表；benchmark skill 以 grep SOP 直接讀 adapter 的同名章節。
+> **選用操作，非 12 必填核心**；spex 內建 skill 目前**沒有**呼叫者（原使用者 `spex-benchmark` 已移除），保留供專案自訂 skill 使用。adapter 可不實作（未實作 → 回 `success: false`，由呼叫方 fallback 為輸出 Markdown 供使用者手動貼上）。未列入頂部「Skills 引用 Adapter 規範」12 核心對照表；呼叫方以 grep SOP 直接讀 adapter 的同名章節。
 
 **把 SDD 基準 / 成本紀錄寫入「會渲染表格與可勾選 to-do」的載體（report 頁 / 文件內文 body）。** 與 `addComment` 的關鍵差異：目的地必須**渲染** Markdown 表格與 `- [ ]` to-do——只能保留純文字、不渲染的留言類載體**不可**用於本操作。
 
@@ -468,7 +468,7 @@ params: {
 行為規則：
 
 - 必須寫到**會渲染**的載體（如頁面內文 body）；不可退化為不渲染的留言。
-- 目的地不存在 / 系統不支援渲染表格與 to-do → 回 `success: false` + `reason`，由 benchmark skill fallback。
+- 目的地不存在 / 系統不支援渲染表格與 to-do → 回 `success: false` + `reason`，由呼叫方 fallback。
 - adapter 文件必須在對應章節說明 `target` 接受的形式與 `append` / `replace` 的實作方式。
 
 > **寫入前確認規則**：同 `addComment`（展示完整內容 → 使用者「確認」後才寫）。
