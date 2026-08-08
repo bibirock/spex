@@ -51,7 +51,7 @@ description: 批次排程執行器。指定多個卡片編號（或 tracker 查�
 
 ## Process
 
-> **起跑序（規範）：`/plan`（必經）→ 執行驅動（手動 / `/goal` / `/loop` 三選一）**。批次一律先在 **plan 模式**完成「盤點 + 分類確認 + 批次授權」（唯讀，不動 code / 分支 / tracker），經使用者核准計畫（ExitPlanMode）後，進入執行階段把整批推到全終態並開批次 PR。**小批次核准後手動跑即可、不需要 goal；大批次或要無人值守跑到完才用 /goal**（見下方「驅動模式」）。依 SDD workflow 規則「spex-schedule 批次模式互動確認規則 › 起跑序」。
+> **起跑序（規範）：`/plan`（必經）→ 執行驅動（手動 / `/goal` / `/loop` 三選一）**。批次一律先在 **plan 模式**完成「盤點 + 分類確認 + 批次授權」（唯讀，不動 code / 分支 / tracker），經使用者核准計畫（ExitPlanMode）後，進入執行階段把整批推到全終態並開批次 PR（PR 開立不需額外授權；合併由人類執行）。**小批次核准後手動跑即可、不需要 goal；大批次或要無人值守跑到完才用 /goal**（見下方「驅動模式」）。依 SDD workflow 規則「spex-schedule 批次模式互動確認規則 › 起跑序」。
 >
 > | 階段 | 模式 | 涵蓋 Phase | 性質 |
 > |---|---|---|---|
@@ -120,11 +120,11 @@ description: 批次排程執行器。指定多個卡片編號（或 tracker 查�
 
 1. **凍結範圍**：依 Phase 0「範圍凍結」把查詢 / 範圍解析成具體 ID 清單並凍結進計畫。
 2. **分類預判**：對未起跑卡片（無 Plan 留言）概述預期路線 / Tier（細節由各卡 plan skill 於執行階段定）；降 Tier / 降規模屬不可自決，於計畫標記待人工。
-3. **批次授權收集**（可選但建議）：詢問是否給「**授權本批次全自動開立 PR**」——給了 → /goal 連 Phase 4.B 批次 PR 一起自動開；不給 → /goal 跑到 Phase 4.B 暫停等確認。
+3. **批次 PR 說明**：對帳通過後 Phase 4.B 會直接開出**一個**涵蓋全批的 PR（開 PR 屬一般流程，不需另外的授權語句）。合併仍由人類於平台 UI 執行——見 SDD workflow 規則「PR 合併控管」。
 4. **ExitPlanMode 計畫交付**，內容含：
    - 排程看板（Phase 1）＋凍結 ID 清單（共 `<N>` 張）
    - 將建立的共用分支名（執行階段 Phase 2.5 才實際建）
-   - 批次授權狀態（已授權 / 待 Phase 4.B 確認）
+   - 批次 PR：對帳通過後於 Phase 4.B 自動開立（一個 PR 涵蓋全批）
    - **執行方式建議**（依批次大小，見「驅動模式」）：
      - **小批次**（估計一個 context 跑得完）→ 核准計畫後**直接執行即可**（手動驅動），毋須 /goal。
      - **大批次 / 要無人值守跑到完** → 附上**可直接貼上的 /goal 指令**（`<N>` = 凍結清單卡片數）：
@@ -163,7 +163,7 @@ description: 批次排程執行器。指定多個卡片編號（或 tracker 查�
    - `done`：working tree 確認乾淨（commit 已落在共用分支）→ 取下一張未達終態的卡
    - `blocked`：記錄原因與斷點 → 取下一卡
 4. **斷路器**：**連續 2 張卡 blocked** → 視為系統性故障（環境、權限、規則檔問題），中止整批並彙報，不再消耗後續卡片
-5. 卡片完成是天然的 context 檢查點：批次狀態全在 tracker（各卡留言鏈 + 錨點卡的批次分支留言），**不另寫本機檔案**；壓縮後由下一輪重新盤點 tracker 自動還原。需壓縮時可直接 `/compact`（沿用 implement Phase 0.5 條件式策略，壓縮非強制，且不需先寫檔——進度持久化已由 tracker 承擔）
+5. 卡片完成是天然的 context 檢查點：批次狀態全在 tracker（各卡留言鏈 + 錨點卡的批次分支留言），**不另寫本機檔案**。context 壓縮由 Claude Code 自動處理，**本 skill 不自訂壓縮流程、也不需先寫檔**——進度持久化已由 tracker 承擔，壓縮後由下一輪重新盤點 tracker 自動還原
 
 ### Phase 4: 對帳 + 批次 PR（宣告完成前必做）；壓縮後第一步重新 Phase 1 盤點 tracker
 
@@ -185,9 +185,8 @@ description: 批次排程執行器。指定多個卡片編號（或 tracker 查�
 
 - `mode: batch-final`、共用分支 `chore/schedule-<YYYYMMDD-HHmm>`、base 分支
 - 全部 done 卡片的 work item ID 清單（含各自子任務 ID）
-- 批次預授權原文＋時間戳（若 Phase 2 收集到「授權本批次全自動開立 PR」）；未預授權 → pull-request 走互動確認，展示 PR 內容等使用者「確認」
 
-pull-request 對共用分支 → base 開**一個** PR、逐卡寫稽核留言（`## [Spex] PullRequest 完成`，引用同一 PR URL 與授權記錄）。PR 成功後該批 done 卡片的留言鏈才補齊 `PullRequest`。
+pull-request 對共用分支 → base 開**一個** PR、逐卡寫稽核留言（`## [Spex] PullRequest 完成`，引用同一 PR URL）。PR 成功後該批 done 卡片的留言鏈才補齊 `PullRequest`。
 
 ### Phase 5: 批次結果彙報
 
@@ -197,7 +196,7 @@ pull-request 對共用分支 → base 開**一個** PR、逐卡寫稽核留言�
 > 總數 <N> | done <X> | blocked <Y> | 共用分支 chore/schedule-<YYYYMMDD-HHmm> | 日期：<DATE>
 
 ### 批次 PR
-- PR: <url>（涵蓋 done 卡片：#<id...>）| 開立模式：互動確認 / 批次預授權
+- PR: <url>（涵蓋 done 卡片：#<id...>）| 合併：待人類 reviewer 於平台 UI 操作
 - 全部 blocked → 「未開 PR（無 done 卡片）」
 
 ### 完成清單
@@ -221,7 +220,7 @@ pull-request 對共用分支 → base 開**一個** PR、逐卡寫稽核留言�
 
 | 階段 | 模式 | 用法 | 適用 |
 |---|---|---|---|
-| **計畫（必經）** | **/plan** | 唯讀跑 Phase 0–2：收集任務來源、盤點看板（對話呈現）、分類確認、收集批次授權（含「**授權本批次全自動開立 PR**」）；ExitPlanMode 呈現計畫等核准 | 一律先做；不動 code / 分支 / tracker |
+| **計畫（必經）** | **/plan** | 唯讀跑 Phase 0–2：收集任務來源、盤點看板（對話呈現）、分類確認、收集批次授權；ExitPlanMode 呈現計畫等核准 | 一律先做；不動 code / 分支 / tracker |
 | 執行（三選一） | **手動** | 核准後直接呼叫本 skill，於同一 turn 內依序推進，直到全部終態或使用者中斷 | **小批次**（估計一個 context 跑得完）、在場監督；plan 核准後直接跑即可，**不需要 goal** |
 | 執行（三選一） | **/goal** | 核准後設定：`/goal 排程清單全部卡片達終態且批次 PR 已開立（排程看板 done + blocked = 總數、對帳通過、Phase 4.B 完成）or stop after <2×N> turns` | **大批次 / 長任務 / 要無人值守跑到完**：跨 context 壓縮存活（每輪重新盤點 tracker）、由獨立 fast model 驗證收斂、有 turn 上限 |
 | 執行（三選一） | **/loop** | 核准後 `/loop <interval> /spex-schedule <ids>` 定時輪詢推進 | 卡片常在等外部事件（CI、review 回覆）時，按時間間隔回來檢查 |
@@ -233,7 +232,7 @@ pull-request 對共用分支 → base 開**一個** PR、逐卡寫稽核留言�
 - 起跑序不可省略 plan 階段：未經 /plan 盤點與授權，不得直接進執行驅動。
 - 手動 / /goal / /loop 是**並列的三種執行驅動**，不是漸進關係；goal 並非必選，只在「一個 context 裝不下整批」或「要無人值守跑到完」時才需要。
 - /goal 與 /loop 不可同時啟用（互相覆蓋）。
-- 批次 PR 自動開立需在 plan 階段取得「授權本批次全自動開立 PR」；未取得 → 執行會推進到 **Phase 4.B 批次 PR** 暫停等使用者確認（這是設計行為，不是卡死——逐卡實作可全自動跑完，最後一個 PR 留給使用者把關）。
+- 批次 PR 於對帳通過後由 Phase 4.B 直接開立，**不需**額外的 PR 授權語句（開 PR 屬一般流程）。真正留給人的把關點是**合併**——PR 開出來後由人類 reviewer 於平台 UI 審查與合併。
 - goal 條件务必含上限子句（`or stop after N turns`），避免無法收斂時空轉。
 
 ---
@@ -256,7 +255,8 @@ pull-request 對共用分支 → base 開**一個** PR、逐卡寫稽核留言�
 - ❌ 連續 blocked 仍繼續消耗整批（斷路器失效）
 - ❌ 本 skill 直接執行任何階段邏輯或呼叫 `TRACKER.createPullRequest`（PR 唯一入口在 pull-request；批次 PR 由本 skill **呼叫** pull-request 開立）
 - ❌ 逐卡開 PR（批次模式只在 Phase 4.B 開一個 PR）
-- ❌ 把排程確認當成 PR 預授權（兩者是獨立授權；PR 預授權必須含明確語句）
+- ❌ 由 schedule 直接呼叫 `TRACKER.createPullRequest`（唯一入口仍是 pull-request skill）
+- ❌ 合併批次 PR（設 autoComplete / status=completed / gh pr merge / 直推保護分支）
 - ❌ 跳過 /plan 計畫階段直接進執行驅動（起跑序違規）
 - ❌ 在 plan 模式內建分支 / 寫檔 / 動 tracker（plan 階段只讀不寫）
 - ❌ 把批次進度或共用分支名寫進本機檔案——唯一持久化在 tracker，後續者只憑 tracker 接手
@@ -266,7 +266,7 @@ pull-request 對共用分支 → base 開**一個** PR、逐卡寫稽核留言�
 - [ ] 起跑序：已先以 /plan 完成 Phase 0–2 盤點＋確認＋授權並核准，再進執行驅動
 - [ ] 任務來源已轉成去重的 ID 清單；順序（輸入順序或拓撲）已確定
 - [ ] 每輪迭代開頭重新盤點全部卡片（非快取）
-- [ ] Phase 2 首輪確認完成；批次預授權（若有）已記錄原文＋時間戳
+- [ ] Phase 2 首輪確認完成；批次授權原文＋時間戳已記錄
 - [ ] 逐卡依序推進；全程留在共用分支、未逐卡建分支、未切回 base
 - [ ] blocked 卡片皆附原因與斷點；斷路器規則已生效
 - [ ] Phase 4.A 對帳通過（終態唯一性＋留言鏈完整性＋子任務終態）

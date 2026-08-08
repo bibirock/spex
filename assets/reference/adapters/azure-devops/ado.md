@@ -24,7 +24,7 @@
 | `TRACKER.getParentImages`   | 必填 | 從 `System.Description` HTML 萃取 `<img>`                                     | 無圖時回 `[]`                                           |
 | `TRACKER.linkDependency`    | 必填 | `mcp__azure-devops__manage_work_item_link`（無此工具時 REST fallback）        | linkType：`System.LinkTypes.Dependency-Forward/Reverse` |
 | `TRACKER.getDependencies`   | 必填 | `mcp__azure-devops__get_work_item`（`expand: "relations"`）                   | 子卡走 `Hierarchy-Forward`、依賴走 `Dependency-*`       |
-| `TRACKER.createPullRequest` | 必填 | `mcp__azure-devops__list_pull_requests` + `create_pull_request`               | **僅 pull-request skill 可呼叫**；autoComplete 一律禁用 |
+| `TRACKER.createPullRequest` | 必填 | `mcp__azure-devops__list_pull_requests` + `create_pull_request`               | **僅 pull-request skill 可呼叫**（Verify／章戳 Gate 的統一收口）；autoComplete 一律禁用（PR 合併控管） |
 | `TRACKER.updatePullRequest` | 必填 | `mcp__azure-devops__update_pull_request`                                      |                                                         |
 | `ADO.readAttachment`        | 擴充 | curl + PAT（從 `~/.claude.json` 讀）                                          | 用於讀 description 內嵌圖片                             |
 | `ADO.queryWorkItems`        | 擴充 | MCP 查詢類工具（先核對工具清單；無 → 請使用者貼 ID 清單）                     | 用於 schedule 的 tracker 查詢來源                       |
@@ -434,7 +434,7 @@ mcp__azure-devops__get_work_item({ workItemId: <childId>, expand: "relations" })
 
 ## `TRACKER.createPullRequest(params)`
 
-> **使用時機**：**僅 `spex-pull-request` skill Phase 4** — 所有子任務完成、`spex-selfcheck` 最新 Verify 留言為 PASS、且已依「PR 開立控管」取得使用者確認或預授權後呼叫。其他 skill 一律不得呼叫本操作。
+> **使用時機**：**僅 `spex-pull-request` skill** — 所有子任務完成、`spex-selfcheck` 最新 Verify 留言為 PASS、章戳 Gate 通過後呼叫（依「PR 開立控管」展示內容留痕即可，不需人為確認）。其他 skill 一律不得呼叫本操作。
 
 ### 步驟一：前置檢查
 
@@ -490,7 +490,7 @@ mcp__azure-devops__create_pull_request({
 
 ### 步驟三：autoComplete 一律禁用
 
-依 SDD workflow 規則「PR 開立控管」，`autoComplete` **一律為 `false`**（config 導致自動誤發 PR 是已知風險，此為防範措施之一）。
+依 SDD workflow 規則「**PR 合併控管**」，`autoComplete` **一律為 `false`**——它是**預約自動合併**，等同繞過「合併只由人類執行」這條規則。
 
 - 收到 `params.autoComplete === true` → 視為違規：**不呼叫** MCP，停止並告知使用者本流程禁用 auto-complete
 - 合併與完成一律由人類 reviewer 於 ADO UI 操作
@@ -520,9 +520,13 @@ mcp__azure-devops__update_pull_request({
   title: params.title,
   description: params.description,
   isDraft: params.draft,
-  status: params.status   // "active" / "abandoned" / "completed"
+  status: params.status   // "active" / "abandoned"（"completed" = 合併，禁止傳入）
 })
 ```
+
+> ⚠️ **`status: "completed"` 就是合併**。依 SDD workflow 規則「PR 合併控管」，任何 skill 都不得傳入；
+> Claude Code 環境由 `spex-merge-guard.sh`（PreToolUse，exit 2）在參數層硬擋——同一個工具改 title / description
+> 完全放行，只有帶 `status: completed` 或 autoComplete 家族時才擋。合併一律由人類於 ADO UI 操作。
 
 **Reviewers**（用 add / remove，無裸 `reviewers` 欄位）：
 

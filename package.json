@@ -1,6 +1,6 @@
 {
   "name": "spex-cli",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "將 spex skills 與 MCP 設定一鍵安裝到 Claude Code / GitHub Copilot 等 AI 代理工作環境",
   "type": "module",

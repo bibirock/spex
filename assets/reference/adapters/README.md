@@ -508,8 +508,8 @@ skills 不會自動呼叫擴充操作；只有引用該 adapter 的 skill 才可
 
 1. 同一內容在前一個步驟已**完整展示**且其後未變更 → 確認步驟得引用先前展示（標明步驟編號，例：「內容同 Phase 7 展示，無變更」），不必重貼全文；內容有任何變更則必須重新完整展示。
 2. `linkDependency` 不單獨確認——由 task Phase 5.4 一次展示全部依賴邊、單次確認後逐邊呼叫。
-3. `createPullRequest` 在使用者已給「全自動開立 PR 預授權」時，依 SDD workflow 規則「PR 開立控管」的預授權條款執行（仍須展示內容與稽核紀錄，但不暫停等待輸入）。
-4. schedule 批次執行期間：使用者對排程計畫的一次性確認，構成批次內各卡**階段性留言**（escalation 留言、Implement / Verify 留言等）的預先批准——內容仍逐筆展示，但不暫停等待輸入。`createPullRequest` 不在此列，仍依第 3 點的雙路徑。
+3. `createPullRequest` 屬一般流程（見 SDD workflow 規則「PR 開立控管」）：展示完整內容留痕即可，**不暫停等待輸入**。注意這只涵蓋「開立」——`updatePullRequest` 帶 `status: completed` 或任何 autoComplete 家族屬**合併**，一律禁止（見「PR 合併控管」）。
+4. schedule 批次執行期間：使用者對排程計畫的一次性確認，構成批次內各卡**階段性留言**（escalation 留言、Implement / Verify 留言等）的預先批准——內容仍逐筆展示，但不暫停等待輸入。
 
 ---
 

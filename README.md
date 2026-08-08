@@ -9,7 +9,7 @@
 
 > **spex** — 把 SDD（spec-driven development）的 skills、reference 與 MCP 設定一鍵安裝到任何專案，**一份來源、多 agent 落地**，同時支援 **Claude Code**、**GitHub Copilot** 與 **OpenAI Codex CLI**。
 
-![version](https://img.shields.io/badge/version-0.8.0-blue) ![node](https://img.shields.io/badge/node-%3E%3D18-green) ![type](https://img.shields.io/badge/type-ESM-yellow) ![license](https://img.shields.io/badge/license-MIT-green)
+![version](https://img.shields.io/badge/version-0.9.0-blue) ![node](https://img.shields.io/badge/node-%3E%3D18-green) ![type](https://img.shields.io/badge/type-ESM-yellow) ![license](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -160,7 +160,7 @@ spex init   # 互動式：偵測 agent、選安裝版本、挑 skills、寫入 s
 
 ### `spex init`
 
-互動式初始化 — 偵測目標專案的 agent、**選安裝版本**、挑要安裝的 skills、寫檔。會一併安裝 [reference](#支援的-agent)、[**專案規則 `rules/`**](#rules專案規則)、[**PR 開立防護**](#3-pr-開立防護流程層--技術層) 與 [**MCP-only 繞過防護**](#4-mcp-only-繞過防護中層)。
+互動式初始化 — 偵測目標專案的 agent、**選安裝版本**、挑要安裝的 skills、寫檔。會一併安裝 [reference](#支援的-agent)、[**專案規則 `rules/`**](#rules專案規則)、[**PR 合併防護**](#3-pr-合併防護流程層--技術層) 與 [**MCP-only 繞過防護**](#4-mcp-only-繞過防護中層)。
 
 ```bash
 spex init                     # 互動式，安裝版本預設停在 agent（無沙盒）
@@ -188,7 +188,7 @@ spex uninstall spex-plan   # 只移除指定 skill（保留 reference / rules / 
 spex uninstall --agent codex -y  # 指定 agent 並跳過確認
 ```
 
-> 防護規則（`permissions.ask` / `permissions.deny` / denyList / sandbox）採「所有權清單」移除：只刪 spex 寫入、與常數完全相符者，使用者自訂設定一律保留。
+> 防護規則（`permissions.deny` / denyList / sandbox）與 PreToolUse hook 採「所有權清單」移除：只刪 spex 寫入、與常數完全相符者，使用者自訂設定一律保留。舊版（≤ v0.8.0）寫入 `permissions.ask` 的三條開 PR 規則也會一併清掉。
 
 ### `spex mcp [setup]`
 
@@ -354,8 +354,8 @@ flowchart TD
 | 0–2           | 上下文 / 分支檢核；`getDependencies` 建 DAG 拓撲排序（循環依賴 → 回 plan）                                                              |
 | 3A–3D TDD     | Red（寫失敗測試並跑一次確認失敗）→ Green → Refactor（驗證指令束全綠；**commit 前清 artifact**）                                         |
 | 3F Escalation | **F.4 E2E 失敗**：重試 → 外部知識查詢 → 仍不過 → **判 Fail、寫 `Verify Fail`、捕捉教訓（trigger `implement-f4`）、阻斷整鏈**，絕不 skip |
-| 3G 標記完成   | 驗證全綠 → code-reviewer → `/commit-message` 提交 → 任務 `done`                                                                          |
-| I 父卡閉環    | 補父卡測試 + 完整 E2E + 官方 `/review` → **對抗式詰問取 PASS 章** → 驗章 exit 0 才寫「Implement 完成」留言                              |
+| 3G 標記完成   | 驗證全綠 → 派 `code-reviewer` subagent 審變動檔 → `/commit-message` 提交 → 任務 `done`                                                    |
+| I 父卡閉環    | 補父卡測試 + 完整 E2E + PR 級審查（`code-review` skill／`code-reviewer` subagent，依環境降級並標注）→ **對抗式詰問取 PASS 章** → 驗章 exit 0 才寫「Implement 完成」留言 |
 
 **教訓閉環**：前導段 Recall；F.4 Capture（Promote 不在此，集中於 selfcheck）。
 **前置**：task / plan(Tier 1) → **後續**：`spex-selfcheck`
@@ -377,15 +377,15 @@ flowchart TD
 
 ### 7. `spex-pull-request` — PR 開立唯一入口
 
-**角色**：PR 守門員，唯一允許呼叫 `TRACKER.createPullRequest` 的 skill。
+**角色**：PR 守門員，唯一允許呼叫 `TRACKER.createPullRequest` 的 skill（統一收口 Verify / 章戳 Gate）。**不合併 PR**。
 
 | Phase        | 做什麼                                                                                          |
 | -------------- | ----------------------------------------------------------------------------------------------------- |
 | 1.1–1.2 Gate | 分支檢核；**Verify Gate（不可繞道）**：逐卡確認最新 Verify = PASS（批次模式逐卡檢查），否則停止 |
 | 1.3–1.5      | 子任務全 done；分支已推送（禁 force push）；查 active PR（非本流程開立 → 告警停止）             |
-| 2 組裝       | `createPullRequest`（含 selfcheck AC 對照表、E2E 報告連結；`autoComplete=false`）               |
-| 3 人為介入   | 防護狀態檢查（`permissions.ask` 三條，缺 → 標 `degraded`）；**互動確認 / 預授權雙路徑**         |
-| 4 收尾       | 開 PR（批次只開一次）→ 對每張父卡寫稽核留言 → 刪除暫留 E2E 報告                                 |
+| 2 組裝       | 組出 title / description（含 selfcheck AC 對照表、E2E 報告連結；`autoComplete=false`）          |
+| 3 開立收尾   | 展示內容留痕（**不等待輸入**）→ `createPullRequest`（批次只開一次）→ 對每張父卡寫稽核留言 → 刪除暫留 E2E 報告 |
+| 4 失敗處理   | 未推送 / 建立失敗 / 已有 active PR（改走 `updatePullRequest`，**禁傳 `status`**）等分支         |
 
 **教訓閉環**：前導段 Recall（PR 層失敗可被取回）。
 **前置**：selfcheck PASS → **後續**：人類 reviewer
@@ -416,7 +416,7 @@ flowchart TD
 
 **角色**：架構設計師，建立 Tracker Adapter 文件讓 spex 支援新追蹤系統（GitHub / Jira / Linear），並同步腳手架相依的 host 端執行層。
 
-流程：讀 `adapters/README.md` 協定 → 12 小節需求問答（12 個必填 `TRACKER.*` 操作可行性、分支前綴、規格建卡欄位對照、relay 執行檔樁檔可行性）→ 對照既有範本起草 → relay 執行檔樁檔生成（或誠實降級）→ 安全可加性設定編輯（`.mcp.json` / `permissions.ask` / 分支命名參數化）→ 安全敏感檢查清單（不自動套用）→ 同步 README 清單 → 展示確認 → 寫入。完成後於 `sdd-workflow.md` 改 `Tracker Adapter:` 一行即可切換分支前綴與欄位映射；tracker 寫入的沙盒 dispatch 管線是否可用，仍取決於是否已補齊 relay 執行檔（見 v0.7.0 升級注意）。
+流程：讀 `adapters/README.md` 協定 → 12 小節需求問答（12 個必填 `TRACKER.*` 操作可行性、分支前綴、規格建卡欄位對照、relay 執行檔樁檔可行性）→ 對照既有範本起草 → relay 執行檔樁檔生成（或誠實降級）→ 安全可加性設定編輯（`.mcp.json` / 合併通道的 `permissions.deny` 與 merge-guard 涵蓋檢查 / 分支命名參數化）→ 安全敏感檢查清單（不自動套用）→ 同步 README 清單 → 展示確認 → 寫入。完成後於 `sdd-workflow.md` 改 `Tracker Adapter:` 一行即可切換分支前綴與欄位映射；tracker 寫入的沙盒 dispatch 管線是否可用，仍取決於是否已補齊 relay 執行檔（見 v0.7.0 升級注意）。
 
 ### 11. `commit-message` — Commit 訊息（工具型）
 
@@ -511,7 +511,7 @@ flowchart TD
 
 - **憑證只在 host**：容器沒有 PAT / MCP、也連不出去，所以「決定要寫什麼」在沙盒、「實際寫入」在 host，中間三條通道就是①派工 prompt、②`[TRACKER-ACTION]`、③影子流。這也是 token 貴 2 倍的結構性原因——①要自足、②要逐字中繼。
 - **機器閘門而非自律**：host 收到蓋章結果後**自己重跑一次驗證束**，數字與沙盒自報對得起來才 commit。這是決定性的反做假機制。
-- **兩支 PreToolUse hook 並存**（Claude Code）：`sandbox-guard.sh` 守雙平面邊界（host 不准直接寫碼、沙盒不准碰 git/網路），`spex-stamp-guard.sh --plane sandbox` 守章戳鏈（擋 host 繞過 relay 直發含章留言）。同一次工具呼叫兩支都跑、任一 exit 2 即擋；合併 `settings.sandbox-snippet.json` 時**只增不換**。
+- **三支 PreToolUse hook 並存**（Claude Code 沙盒版）：`sandbox-guard.sh` 守雙平面邊界（host 不准直接寫碼、沙盒不准碰 git/網路）、`spex-stamp-guard.sh --plane sandbox` 守章戳鏈（擋 host 繞過 relay 直發含章留言）、`spex-merge-guard.sh` 守 PR 合併控管。同一次工具呼叫每支都跑、任一 exit 2 即擋；合併 `settings.sandbox-snippet.json` 時**只增不換**。
 - **平面必須一致**：沙盒版務必用 `spex init --mode sandbox` 安裝。若 hook 還停在 `--plane agent`，它會拿 host session transcript 去驗沙盒內產生的章——那條流裡根本沒有 challenger 派發事件，**必然假 FAIL**。
 
 ### 章的強度分三層，不同環境不等價
@@ -545,12 +545,24 @@ flowchart TD
 3. **防錯檢核 A–D**：AC 覆蓋、列舉完整性 grep 勾稽、範圍外變更、測試弱化。
 4. 重做有上限（2 次），超限升級人工。
 
-### 3. PR 開立防護（流程層 + 技術層）
+### 3. PR 合併防護（流程層 + 技術層）
 
-**目標：AI 觸發而自動產生的 PR 數 = 0**，同時保留全自動空間。
+**合併一律由人類在平台 UI 執行，AI 不得觸發。**
 
-- **流程層（三 agent 皆有）**：PR 從 implement 拆出，只有 `pull-request` 能呼叫 `createPullRequest`，前置必為 Verify PASS；開立前雙路徑取得人為確認（互動「確認」或含「**授權本次/本批次全自動開立 PR**」明確原文的預授權）；`autoComplete` 一律 false。
-- **技術層（Claude Code）**：`init` 把開 PR 管道（`mcp__azure-devops__create_pull_request`、`az repos pr create`、`gh pr create`）寫入 `.claude/settings.json` 的 `permissions.ask`——互動 session 須當下核准、**headless（`claude -p`）自動拒絕**。
+> **v0.9.0 政策反轉**：舊版擋的是 PR **開立**。但開 PR 可逆、可審查，擋它只是在每條任務鏈尾端插一次人工等待，還養出一整套授權語句機制。真正不可逆的是**合併**——PR 一旦合進共用分支，程式碼就進了別人的工作基準。所以現在：**開 PR 回歸一般流程，合併改為無逃生口的硬擋。**
+
+- **流程層（三 agent 皆有）**：`pull-request` 仍是唯一能呼叫 `createPullRequest` 的 skill，但那是為了讓 **Verify PASS 與章戳 Gate 有統一收口**，不是對開 PR 的防護——開立前只展示內容留痕，不需人為確認。合併端則規定：`autoComplete` 一律 false、不得傳 `status: completed`、不得直推保護分支，合併由人類 reviewer 在平台 UI 執行。
+- **技術層（Claude Code）**：`init` 寫入兩層互補的防護，涵蓋三類通道：
+
+  | 通道 | 例子 | 由誰擋 |
+  | --- | --- | --- |
+  | 平台 CLI 合併指令 | `gh pr merge`、`gh pr review --approve`、`az repos pr set-vote` | `permissions.deny`（無非合併用途，字面層直接封） |
+  | MCP 參數層合併 | `update_pull_request` 帶 `status: completed`、任何 `autoComplete` / `autoCompleteSetBy` / `completionOptions` | **`spex-merge-guard.sh` hook**——同一個工具也用來改 title / description，`permissions` 是工具層粒度分不出來，只有讀得到 `tool_input` 的 hook 擋得到 |
+  | 繞過 PR 直推 | `git push origin dev`、`git push --all`、當前分支即保護分支的裸 `git push` | 同上 hook（解析目標分支後判定）。**`git push` 不能進 deny**——推 feature 分支是開 PR 的必經步驟 |
+
+  hook 是 `PreToolUse` exit 2，由 harness 執行、模型停不掉，**無逃生口**：互動 session 也不放行。保護分支預設 `main` / `master` / `dev` / `develop` / `development`，可用 `SPEX_PROTECTED_BRANCHES` 環境變數覆寫。
+
+  > **誠實標註**：Copilot 只有 `terminal.denyList` 字面封鎖、Codex 只有 `sandbox_mode` 粗粒度，**兩者都沒有參數層防護**（MCP 合併與 `git push` 擋不到），安裝時會印出對應提示。Bash 比對是字面解析，對 compound command / wrapper / alias 變體不完備——**這層擋的是「自動觸發」，不是有心人的刻意繞過**。
 
 ### 4. MCP-only 繞過防護（中層）
 
@@ -562,7 +574,7 @@ flowchart TD
 | GitHub Copilot | `.vscode/settings.json` 的 `terminal.denyList`                       | 僅 VS Code agent 終端 |
 | OpenAI Codex   | `config.toml` 的 `sandbox_mode` + `approval_policy`（封網路 egress） | 粒度較粗              |
 
-> **誠實標註**：三 agent 不等價；對 compound command / wrapper / env-var 變體脆弱。Claude Code 的 `PreToolUse` exit-2 硬擋**已在章戳鏈落地**（`spex-stamp-guard.sh`：擋未驗章的 tracker 寫入與對事件流的改寫），但**尚未涵蓋本節的繞過指令家族**——把繞過封鎖也移進 hook 屬另案，且僅 Claude Code 具該能力。刻意**不**封 PR 開立管道（那條走 `permissions.ask` 人工核准）。
+> **誠實標註**：三 agent 不等價；對 compound command / wrapper / env-var 變體脆弱。Claude Code 的 `PreToolUse` exit-2 硬擋已用於[章戳鏈](#沙盒版選用)（`spex-stamp-guard.sh`）與[PR 合併控管](#3-pr-合併防護流程層--技術層)（`spex-merge-guard.sh`），但**尚未涵蓋本節的繞過指令家族**——把繞過封鎖也移進 hook 屬另案，且僅 Claude Code 具該能力。刻意**不**封 PR **開立**管道（開 PR 屬一般流程）。
 
 ### 5. 教訓閉環（lessons-learned loop）
 
@@ -600,8 +612,9 @@ AI 工作流最大的可靠度缺口不是「會犯錯」，而是**同一類錯
 
 | 治理面向         | 對應機制                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| PR 開立控管      | 流程層唯一入口 + 技術層 `permissions.ask` + **MCP-only 繞過防護**（封後門直打 API/CLI）                             |
-| 章戳鏈硬閘（Claude Code） | agent 版一支 `spex-stamp-guard.sh --plane agent`；sandbox 版該支轉 `--plane sandbox` 並與 `sandbox-guard.sh` **兩支並存**（任一 exit 2 即擋、合併只增不換）。移除／降級須在當次任務鏈留痕 |
+| PR 合併控管      | 流程層「合併只由人類執行」+ 技術層 `permissions.deny`（合併 CLI）+ **`spex-merge-guard.sh` hook**（MCP 參數層 / `git push` 目標分支，exit 2 無逃生口） |
+| PR 開立控管      | 流程層唯一入口（統一收口 Verify / 章戳 Gate）；**開 PR 本身屬一般流程**，無專屬技術層防護                            |
+| PreToolUse 硬閘（Claude Code） | agent 版 **2 支**（`spex-stamp-guard.sh --plane agent` + `spex-merge-guard.sh`）；sandbox 版 **3 支**（stamp guard 轉 `--plane sandbox`，另加手動合併的 `sandbox-guard.sh`）。各自獨立執行、任一 exit 2 即擋；合併設定只增不換。移除／降級須在當次任務鏈留痕 |
 | SDD 流程可靠度   | 獨立驗收（確定性 Gate + 對抗式判讀）+ **教訓閉環**（反覆失敗升級為確定性硬防護，不依賴模型自律）+ DoD「測試未弱化」 |
 | 任務相依編排     | `task` 寫 tracker 原生 Predecessor/Successor 連結；`implement` 建 DAG 拓撲排序依序執行；`schedule` 批次編排         |
 | Token 成本       | MVP-only 紀律 + 增量看板；`benchmark` 量測每 Scrum point 成本                                                       |
@@ -612,7 +625,7 @@ AI 工作流最大的可靠度缺口不是「會犯錯」，而是**同一類錯
 
 | Agent          | Skill 位置                         | Reference                | Rules                | 教訓                   | MCP 設定             | PR/繞過防護                            |
 | ---------------- | ------------------------------------- | --------------------------- | ----------------------- | ------------------------ | ----------------------- | ----------------------------------------- |
-| Claude Code    | `.claude/skills/<name>/SKILL.md`   | `.claude/reference/`     | `.claude/rules/`     | `.claude/lessons/`     | `.mcp.json`          | `permissions.ask` + `permissions.deny` |
+| Claude Code    | `.claude/skills/<name>/SKILL.md`   | `.claude/reference/`     | `.claude/rules/`     | `.claude/lessons/`     | `.mcp.json`          | `permissions.deny` + 2 支 PreToolUse hook |
 | GitHub Copilot | `.github/prompts/<name>.prompt.md` | `.spex/reference/` | `.spex/rules/` | `.spex/lessons/` | `.vscode/mcp.json`   | `terminal.denyList`                    |
 | OpenAI Codex   | `.codex/skills/<name>/SKILL.md`    | `.codex/reference/`      | `.codex/rules/`      | `.codex/lessons/`      | `.codex/config.toml` | `sandbox_mode` + `approval_policy`     |
 
@@ -641,7 +654,7 @@ spec-driven development 目前最具代表性的開源工具是 [GitHub Spec Kit
 | 面向             | Spec Kit / BMAD-METHOD（依公開資訊所見）                                                                             | spex                                                                                          |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | 核心流程終點     | 到 Implement／agent 完成任務即結束；獨立審查多為社群擴充套件或規劃中功能（如 Spec Kit 的 `/speckit.review` 仍是 open issue） | **獨立驗收是核心強制步驟**：`selfcheck` 用全新上下文（不繼承實作對話）逐條 AC 做二元判定，無證據一律 Fail |
-| PR 開立          | 由 agent 依 prompt 指示自行判斷是否開 PR，屬約定而非技術限制                                                          | **技術層硬閘**：`TRACKER.createPullRequest` 只允許單一 skill 呼叫，`permissions.ask`/`permissions.deny` 在設定檔層級鎖死，繞過 MCP 直打 API/CLI 另有 deny list 防護 |
+| PR 合併          | 由 agent 依 prompt 指示自行判斷是否合併，屬約定而非技術限制                                                          | **技術層硬閘**：`permissions.deny` 封合併 CLI，另有 `PreToolUse` exit-2 hook 在**參數層**擋 MCP 合併（`status: completed` / autoComplete）與直推保護分支的 `git push`——無逃生口 |
 | 執行環境隔離     | 未見標準化的沙盒執行 / 憑證隔離機制                                                                                    | **選用（獨立安裝版本）**：`spex init --mode sandbox` + `spex-sandbox-init` 生成零憑證、egress 白名單的 Docker 沙盒，搭配交棒前的對抗式 challenger/verifier 蓋章鏈；不需要隔離的專案裝預設 agent 版即可，不吃這份成本 |
 | 任務狀態來源     | 規格通常落在 repo 內檔案，未見內建外部追蹤系統整合                                                                    | **tracker 留言鏈為唯一事實來源**，可跨對話壓縮 / 斷線 / 多 agent 交接，由下一輪自動重新盤點還原               |
 | Agent 支援廣度   | Spec Kit 支援 30+ 種 agent，生態較成熟                                                                                 | 目前 3 種（Claude Code / GitHub Copilot / OpenAI Codex CLI），透過 adapter 架構可擴充                 |
@@ -738,10 +751,14 @@ node bin/spex.js --help   # 本地執行 CLI（等同 npm start）
 
 ### 升級注意
 
+- **v0.9.0**：**PR 政策反轉——防護從「開立」搬到「合併」**。
+  1. **開 PR 回歸一般流程**：不再有開立前的人為確認雙路徑與「授權本次/本批次全自動開立 PR」語句機制；`spex-schedule` 的 plan 階段也不再收集 PR 預授權。重跑 `spex init` 會**自動移除**舊版寫在 `permissions.ask` 的三條開 PR 規則（使用者自訂的 ask 規則保留）。
+  2. **合併改為無逃生口硬擋**：新增 `permissions.deny` 的合併 CLI 規則與第二支 PreToolUse hook `spex-merge-guard.sh`（MCP 參數層 + `git push` 目標分支判定）。**互動 session 也不能合併**——合併請到平台 UI 操作。若你的專案用不同的分支命名，設 `SPEX_PROTECTED_BRANCHES=<逗號分隔>` 覆寫保護分支清單。
+  3. `sdd-workflow.md` 新增治理必備章節 `## PR 合併控管`（原 `## PR 開立控管` 保留但瘦身）；benchmark 的 Goal1 改為檢核合併控管。
 - **v0.8.0**：`spex init` 分成 **agent（預設，無沙盒）/ sandbox** 兩種安裝版本（`--mode` / `--sandbox`）。三點要注意：
   1. **既有專案重跑 `spex init` 會落到 agent 版**，共用資產裡的沙盒段落會被剝除；但 `init` 只寫不刪，先前裝的 `spex-sandbox-init` / `sandboxes/` 等資產**不會**自動移除——要清乾淨請先 `spex uninstall` 再重裝。
   2. **正在用沙盒的專案請改跑 `spex init --mode sandbox`**。章戳硬閘 hook 現在帶 `--plane` 參數；停在舊的無參數字串或 `--plane agent` 會讓 host 拿 session transcript 去驗沙盒內產生的章，**必然假 FAIL**。重跑會就地替換同一條目，不會重複附加。
-  3. `sandbox-guard.sh` 與 `spex-stamp-guard.sh` 是**兩支並存**的 PreToolUse hook。合併 `settings.sandbox-snippet.json` 時只增不換，別把章戳硬閘條目蓋掉。
+  3. `sandbox-guard.sh`、`spex-stamp-guard.sh` 與 `spex-merge-guard.sh` 是**並存**的 PreToolUse hook（agent 版 2 支、沙盒版 3 支）。合併 `settings.sandbox-snippet.json` 時只增不換，別把其他條目蓋掉。
 - **v0.7.0**：新增 `spex-sandbox-init` skill（依 Sandbox Profile 協定生成語言無關的 Docker 沙盒腳手架，含 `assets/reference/sandboxes/` 協定文件、參考 profile 與樣板/渲染腳本）；`create-adapter` 擴充為含 relay 執行檔樁檔自動生成、安全可加性設定編輯、安全敏感項目檢查清單三個新 Phase；`adapters/README.md` 協定新增「分支前綴宣告」與「規格建卡欄位對照」兩項強制章節，`ado.md`／`local-file.md` 與 `spex-write-spec` 已同步；`sdd-workflow.md` 的 Branch Naming 改為讀 adapter 宣告的分支前綴，不再寫死 `ADO-`。既有專案重跑 `spex init` 即可拿到新 skill 與協定章節。
 - **v0.6.0**：新增三軌治理隨 `init` 落地——MCP-only 繞過防護（`permissions.deny` / denyList / sandbox）、教訓閉環（`.claude/lessons/`，**必 commit**）、DoD「測試未弱化」。既有專案重跑 `spex init` 即補上規則檔新章節與防護；`commands.md` / `testing.md` 客製內容請保留。
 - **v0.5.0（歷史）**：移除 `spex-clarity`（併入 write-spec / plan）、`spex-orchestrate`、`create-sdd-workflow`。從 < v0.5.0 升級時先 `uninstall` 舊安裝或手動刪除 `.claude/skills/spex-clarity/` 等舊資產，再以新版 `init` 重裝。

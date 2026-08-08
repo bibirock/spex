@@ -34,7 +34,7 @@ description: 依照 tracker 相關的 task 逐一執行 TDD 實作（Red → Gre
 資深工程師角色，依任務清單執行 TDD（Red → Green → Refactor），不偷跑、不過度設計。
 涉及 UI 流程驗證時，使用 testing 規則指定的 UI 驗證工具（瀏覽器 MCP）直接互動，逐步走流程、確認對真實 UI 有效的 selector，並產出/更新測試檔。
 
-**執行模式：主 agent 依序執行所有任務，不派 subagent**（context 以 Phase 0.5 的 compact 策略管理）。品質審查類代理（G.2.5 code-reviewer、Phase I `/review`）不在此限。
+**執行模式：主 agent 依序執行所有任務，不派 subagent**（token 策略；context 壓縮交由 Claude Code 自動處理，本 skill 不自訂壓縮流程）。品質審查類代理（G.2.5 與 Phase I 的 `code-reviewer`）不在此限。
 
 **本 skill 不開 PR**：流程終點是 Phase I 的「Implement 完成」留言，之後交棒 `spex-selfcheck` 獨立驗收；PR 開立只能由 `spex-pull-request` 執行。
 
@@ -247,12 +247,9 @@ artifact 分兩類處理（具體目錄清單見 testing 規則的「E2E artifac
 git diff --name-only HEAD
 ```
 
-將清單交給以下 SKILL，禁止掃描整個專案：
+把清單與本任務 AC 派給 **`code-reviewer` subagent**（`subagent_type: code-reviewer`，定義隨 spex 安裝於 `.claude/agents/code-reviewer.md`），**禁止掃描整個專案**。它唯讀、分級輸出 Critical / Important / Done Well，每條發現須附 `file:line` 與具體失效情境。
 
-- /code-reviewer (官方 Claude Code skill)
-
-確認沒有 Critical Issue 後才能進下一步；有 → 走 F.4 流程。
-- **code-reviewer**：使用原生`/code-reviewer` skill，設定嚴格審查標準（Critical / Important / Done Well），**必須**對每個變動檔案執行，且**必須**給出明確評語（不接受 vague comment）。
+> **環境降級（誠實標註）**：`subagent_type` 必須有註冊定義才派得出去。`.claude/agents/code-reviewer.md` 不存在，或該 agent 環境無 subagent 機制（Codex / Copilot）→ **不得跳過本步驟**，改由主 agent 依同一份判準自審，並在任務留言標注「本環境無獨立 code-reviewer，品質審查由主 agent 自審」——不得宣稱已做獨立審查。
 
 輸出：
 
@@ -289,7 +286,10 @@ code-reviewer: Critical / Important / Done Well
 3. E2E 測試只跑父卡對應的測試檔，確認全綠（0 failed）；失敗 → 走 F.1 開卡接續或 F.4 Fail 判定。
 4. 全線 E2E 以 headless 模式跑出 HTML 報告（路徑見 testing 規則「E2E HTML 報告」），整理成 Markdown 表格；報告目錄暫留至 PR 開立。
 5. **artifact 清理（強制）**：依 [D.1](#d1-ui--e2e-artifact-清理commit-前必做) 同樣規則再做一次（「立即清理」類刪除、E2E HTML 報告目錄暫留）。`git status --short` 必須只剩程式碼變動與暫留的報告目錄。
-6. ✅ **官方 `/review` 通過**：呼叫 Claude Code 官方 `/review` skill 對整個任務鏈累積變動做一次 PR 級審查；Critical Issue 依 G.2.5 的範疇確認分流，全清才進下一步。
+6. ✅ **PR 級審查通過**：對整個任務鏈的累積變動做一次 PR 級審查，Critical Issue 依 G.2.5 的範疇確認分流，全清才進下一步。審查者依環境擇一（**皆不可跳過**）：
+   - **首選**：Claude Code 的 `code-review` skill（舊名 `/review`，現為其別名）。
+   - **叫不動時**（該指令的模型呼叫受 Claude Code 旗標閘控，並非所有環境都開放；`ultra` 層級更是**只能由使用者手動觸發**）→ 改派 `code-reviewer` subagent 對**累積 diff**（`git diff <targetBranch>...HEAD`）跑同一份判準，並於留言標注「PR 級審查以 code-reviewer 執行」。
+   - **兩者皆不可用**（Codex / Copilot）→ 由主 agent 依同一份判準自審，留言誠實標注「本環境無獨立 PR 級審查」，不得宣稱官方審查通過。
 6.5. ✅ **對抗式詰問（交棒前硬閘門）**：起草下方留言後，呼叫 `.claude/skills/spex-challenge/SKILL.md`，stage = `implement`、round = 本輪輪次。
    - **圍欄（`challenge-draft`）＝ 下方留言草稿本體逐字**，不含引章宣稱行。
    - 詰問輸入另附：規格、Task 留言、`git diff <targetBranch>...HEAD`、測試檔變更清單、證據包（宣稱數字的來源指令與 `file:line`）。**禁止**餵入實作推理與對話歷史。
@@ -355,7 +355,7 @@ challenge：PASS（第 <n> 輪｜章 <章號>）
 - [ ] 每任務 commit 訊息由 `/commit-message` 自動產生並直接提交
 - [ ] UI 任務：① 斷言性測試 PASS ② UI Verification 全綠，兩者皆成立
 - [ ] E2E 測試腳本已 commit 進版控；artifact 依 D.1 清理
-- [ ] 父卡層級 E2E 全流程 0 failed；官方 `/review` Critical 全清
+- [ ] 父卡層級 E2E 全流程 0 failed；PR 級審查 Critical 全清（審查者依環境為 `code-review` skill／`code-reviewer` subagent／主 agent 自審，且已於留言標注）
 - [ ] Implement 完成留言已寫入（含 E2E 報告連結）
 - [ ] tracker 子任務全數更新為 done / removed
 

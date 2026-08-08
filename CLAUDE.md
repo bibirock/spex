@@ -44,11 +44,11 @@ npm test                 # node --test dist/**/*.test.js（注意：目前尚無
 
 設計鐵則（動 skill 資產時不可違反）：
 
-- **`TRACKER.createPullRequest` 只允許出現在 `spex-pull-request`**；implement / schedule 不得直接開 PR（goal「AI 自動 PR = 0」的流程層防線）。
+- **`TRACKER.createPullRequest` 只允許出現在 `spex-pull-request`**；implement / schedule 不得直接開 PR。這是為了讓 Verify / 章戳 Gate 有統一收口，**不是**對開 PR 的防護（開 PR 屬一般流程）——不可逆的合併另有專屬硬閘，見「PR 合併防護」。
 - **驗證失敗不得 skip**：implement F.4 走到底是 Fail 判定（寫 `Verify Fail` 留言、停鏈），不存在「跳過測試繼續」路徑；selfcheck 無證據 = Fail、重做上限 3 輪。
 - **selfcheck 的獨立性**：驗證者只拿 AC + diff + 機器證據 + **已剝除上游結論的**任務卡內容，不得餵入實作推理；驗證者不改 code。
 - **章不可自書**：任何 skill 都不得自行編寫章面、自算 sha256、或以「內容看起來通過」宣告 PASS——章只能來自 challenger／verifier 的回傳，驗章只能由 `challenge-audit.py` 裁定，exit ≠ 0 不得交棒（見「章戳鏈」段）。蓋章後潤飾留言本體同樣使章失效。
-- implement 主 agent 依序執行任務、不派 subagent（token 策略）；品質審查（code-reviewer、`/review`）、`challenger` 與 `verifier` 不在此限。
+- implement 主 agent 依序執行任務、不派 subagent（token 策略）；品質審查（`code-reviewer` subagent、PR 級審查）、`challenger` 與 `verifier` 不在此限。
 - 任務相依以 ADO 原生 Predecessor/Successor 連結為準（adapter 操作 `linkDependency` / `getDependencies`），任務留言「依賴」欄為 fallback。
 
 ## 安裝版本（agent / sandbox 雙平面）
@@ -67,13 +67,26 @@ npm test                 # node --test dist/**/*.test.js（注意：目前尚無
 - **圍欄機制**：共用資產（`spex-stamp/SKILL.md`、`rules/sdd-workflow.md`）裡描述沙盒平面的段落用 `<!-- spex:sandbox-only:start / end -->` 包起來，agent 模式安裝時剝除。支援**整行圍欄**（跨多行）與**行內圍欄**（表格儲存格內只拿掉半句）。skill frontmatter 不套圍欄——`description` 一律寫成平面中性措辭。rule frontmatter 的 `skills:` 由 `withoutSandboxSkills()` 過濾掉沙盒 skill，避免產生指向不存在檔案的 `paths:` glob。
 - **⚠️ 不可誤剝**：`sdd-workflow.md` 的 `## MCP-only` 提到 Codex 的 `sandbox_mode` / `approval_policy`，那是 Codex CLI **自己的沙盒設定**，與 Docker 沙盒平面無關，絕對不能加圍欄。改完務必跑一次剝除後的殘留檢查。
 
-## PR 開立防護（claude-code installer）
+## PR 合併防護（claude-code installer）
 
-`claude-code.ts` 的 `install()` 會把 `SPEX_PR_ASK_RULES`（開 PR 的 MCP 工具與 `az repos pr create` / `gh pr create`）merge 進目標專案 `.claude/settings.json` 的 `permissions.ask`：不可破壞 merge（保留使用者設定）、三條齊全時冪等不寫檔、壞 JSON 先備份 `.bak`。`uninstall --full` 只移除與常數**完全相符**的字串（常數即所有權清單），空結構逐層刪、整檔空才刪檔。改規則清單只改 `SPEX_PR_ASK_RULES` 一處。
+**政策自 v0.9.0 反轉**：舊版把防護押在 PR **開立**（`permissions.ask` 三條），但開 PR 可逆、可審查，擋它只是插一次人工等待；真正不可逆的是**合併**。現在開 PR 回歸一般流程，防護全部搬到合併端，**無逃生口**（互動 session 也不放行）。
+
+單一來源在 `base.ts`：`SPEX_MERGE_DENY_COMMANDS`（`gh pr merge` / `gh pr review` / `az repos pr set-vote`——**無非合併用途**才進這張表）、`SPEX_PROTECTED_BRANCHES`（同步自 rules 的 Branch Policy）、`SPEX_LEGACY_PR_ASK_RULES`（v0.8.0 舊規則，**只用於清理**，`install()` 與 `uninstall()` 都會呼叫 `removeLegacyPrAskPermissions` 把它們從既有安裝移除）。
+
+兩層互補、分工明確：
+
+- **`permissions.deny`**（字面層）：由 `ensureDenyRules(cwd, rules, label, log)` / `removeDenyRules` 這對共用 helper 寫入，繞過防護與合併防護各呼叫一次——它們同住 `permissions.deny` 陣列但所有權清單各自獨立。
+- **`spex-merge-guard.sh`**（PreToolUse，exit 2）：擋 deny 表達不了的那些——MCP 的 `update_pull_request` 帶 `status: completed` 或 autoComplete 家族（同一工具也用來改 title，工具層粒度分不出）、`az repos pr update --status completed`、`git push` 到保護分支（含 `--all` / `--mirror`；解析 refspec，無 refspec 則讀當前分支）。
+
+⚠️ **`git push` 絕不可進 deny 清單**——推 feature 分支是 `spex-pull-request` 的必經步驟，封整條會讓開 PR 跑不動。同理 `az repos pr update` 也不進 deny（改 title/description 是正常用途），只能靠 hook 逐引數判定。
+
+hook 註冊改用共用 helper `ensureSpexHook(cwd, {command, owned, matcher, label}, log)` / `removeSpexHook(cwd, owned, log)`，章戳硬閘與合併硬閘各呼叫一次；三態邏輯（同 command 冪等／其他 owned 變體就地替換／否則 append）見「章戳鏈」段。
+
+Copilot 只有 `terminal.denyList` 字面層（`COPILOT_DENY_KEYS` 併了繞過與合併兩組），Codex 連 denylist 都沒有——兩者 install 時各印一行誠實標註，說明 MCP 參數層與 `git push` 擋不到。政策章節在 `assets/rules/sdd-workflow.md` 的 `## PR 合併控管`（治理必備，客製時不可刪）。改清單只改 `base.ts` 一處。
 
 ## MCP-only 繞過防護（中層，三 agent 落地）
 
-防 AI 略過受控 MCP/TRACKER 直打底層 API/CLI。**單一來源**為 `base.ts` 的 `SPEX_BYPASS_COMMANDS`（`curl` / `wget` / `az boards` / `gh api`），各 installer 翻譯成原生格式：Claude Code → `permissions.deny`（`ensureBypassDeny` / `removeBypassDeny`，完全鏡射 PR-ask 那對函式的 merge/冪等/.bak/所有權清單邏輯，衍生清單 `SPEX_BYPASS_DENY_RULES = Bash(<cmd>:*)`）；Copilot → `.vscode/settings.json` 的 `github.copilot.chat.agent.terminal.denyList`（`ensureCopilotDenyList`，多字指令用 regex 鍵）；Codex → `.codex/config.toml` 的 `sandbox_mode` + `approval_policy`（`ensureCodexSandbox`，top-level key prepend 確保在任何 `[table]` 之前、已存在即略過不覆寫）。刻意**不**封 `az repos pr create` / `gh pr create`（那條走 `permissions.ask`，deny 不得蓋掉）。**這是中層**：對 compound/wrapper/env-var 變體脆弱。Claude Code 的 `PreToolUse` exit-2 硬擋**已在章戳鏈落地**（`spex-stamp-guard.sh`，見「章戳鏈」段），但那支 hook 只管章戳與事件流保護，**未涵蓋本節的繞過指令家族**；把繞過封鎖也移進 hook 屬另案。政策章節在 `assets/rules/sdd-workflow.md` 的 `## MCP-only`（含三 agent 不等價的誠實標註）。改清單只改 `SPEX_BYPASS_COMMANDS` 一處。
+防 AI 略過受控 MCP/TRACKER 直打底層 API/CLI。**單一來源**為 `base.ts` 的 `SPEX_BYPASS_COMMANDS`（`curl` / `wget` / `az boards` / `gh api`），各 installer 翻譯成原生格式：Claude Code → `permissions.deny`（`ensureBypassDeny` / `removeBypassDeny`，完全鏡射 PR-ask 那對函式的 merge/冪等/.bak/所有權清單邏輯，衍生清單 `SPEX_BYPASS_DENY_RULES = Bash(<cmd>:*)`）；Copilot → `.vscode/settings.json` 的 `github.copilot.chat.agent.terminal.denyList`（`ensureCopilotDenyList`，多字指令用 regex 鍵）；Codex → `.codex/config.toml` 的 `sandbox_mode` + `approval_policy`（`ensureCodexSandbox`，top-level key prepend 確保在任何 `[table]` 之前、已存在即略過不覆寫）。刻意**不**封 `az repos pr create` / `gh pr create`（開 PR 屬一般流程）；**合併**管道另有專屬 deny 與 hook，見上節。**這是中層**：對 compound/wrapper/env-var 變體脆弱。Claude Code 的 `PreToolUse` exit-2 硬擋**已在章戳鏈落地**（`spex-stamp-guard.sh` 守章戳鏈、`spex-merge-guard.sh` 守 PR 合併控管），但兩支都**未涵蓋本節的繞過指令家族**；把繞過封鎖也移進 hook 屬另案。政策章節在 `assets/rules/sdd-workflow.md` 的 `## MCP-only`（含三 agent 不等價的誠實標註）。改清單只改 `SPEX_BYPASS_COMMANDS` 一處。
 
 ## 章戳鏈（簽章 / 驗章）
 
@@ -84,8 +97,8 @@ npm test                 # node --test dist/**/*.test.js（注意：目前尚無
 - **兩種事件流形狀**：沙盒＝`dispatch-watchdog-host.sh` tee 出的影子流；Claude Code＝`~/.claude/projects/<slug>/<sessionId>.jsonl` ＋ `<sessionId>/subagents/agent-<agentId>.jsonl`，後者由 `transcript-to-stream.mjs` **只做形狀正規化**（補 `subagent_type` / `parent_tool_use_id`、把 tracker 寫入的 MCP 呼叫合成 `[TRACKER-ACTION]` 區塊），不做任何判定。
 - **強度三層、三 agent 不等價**：沙盒（容器物理寫不到）＞ Claude Code（PreToolUse 硬閘 `spex-stamp-guard.sh`，由 harness 執行，擋未驗章的 tracker 寫入與對事件流的改寫）＞ Codex／Copilot（**無事件流＝無章可驗**，只剩 `task-draft-lint`）。文件與留言一律不得把後兩者說成不可偽造。
 - **hook 帶 `--plane` 標明平面、不跨平面裁定**（見「安裝版本」）：命令字串常數在 `claude-code.ts` 的 `SPEX_STAMP_HOOK_COMMANDS`，所有權清單 `SPEX_STAMP_HOOK_OWNED` 另含 v0.7.0 的無參數舊字串。`ensureStampGuardHook` 三態：同平面冪等不寫檔／不同 owned 變體**就地替換 command**（換模式、升級）／都沒有才 append。**絕不可讓兩個平面的 hook 同時掛著**——必有一支誤判。腳本端 `--plane sandbox` 分支不跑 `challenge-audit`，只擋 host 直發含章留言；容器內（`IN_SANDBOX=1` / `/.dockerenv`）一律 exit 0。
-- **沙盒版有兩支 PreToolUse hook 並存**：`spex-stamp-guard.sh`（spex init 寫入，守章戳鏈）與 `sandbox-guard.sh`（`render-profile.mjs` 生成、使用者手動合併，守雙平面邊界）。兩支各自獨立執行、任一 exit 2 即擋；合併規則「只增不換」寫在 `settings.sandbox-snippet.json.tmpl` 的 `_comment_two_hooks` 與 `sandboxes/README.md`「與非沙盒章戳硬閘的共存」。
-- **新增資產型別 `agents`**：`assets/agents/*.md`（challenger / verifier）——`subagent_type` 必須有註冊定義才派得出去，只有 Claude Code 有落點（`.claude/agents/`），Copilot / Codex 於安裝時誠實標註不支援。
+- **多支 PreToolUse hook 並存**：agent 版 2 支（`spex-stamp-guard.sh` 守章戳鏈、`spex-merge-guard.sh` 守 PR 合併控管，皆由 spex init 寫入）；沙盒版再加 `sandbox-guard.sh`（`render-profile.mjs` 生成、使用者手動合併，守雙平面邊界）共 3 支。各自獨立執行、任一 exit 2 即擋；合併規則「只增不換」寫在 `settings.sandbox-snippet.json.tmpl` 的 `_comment_hook_coexistence` 與 `sandboxes/README.md`「與其他 spex 硬閘的共存」。
+- **資產型別 `agents`**：`assets/agents/*.md`——章戳鏈的 challenger / verifier，以及 `spex-implement` G.2.5／Phase I 品質審查用的 **code-reviewer**。`subagent_type` 必須有註冊定義才派得出去，只有 Claude Code 有落點（`.claude/agents/`），Copilot / Codex 於安裝時誠實標註不支援。**skill 內引用任何 `subagent_type` 前，先確認 `assets/agents/` 有對應定義**——沒有就是斷鏈（`/code-reviewer` 曾被誤寫成「官方 Claude Code skill」，實際上官方沒有這支指令）。
 
 ## 教訓閉環（lessons-learned loop）
 
