@@ -101,8 +101,10 @@ def main() -> None:
     by_id = {}
     main_texts = []
     skill_loads = []
-    sub_segments = []
+    sub_segments = {}  # parent_tool_use_id -> [(seq, text), ...]（依派發分桶，見下方說明）
+    sub_agent_ids = {}  # parent_tool_use_id -> agent_id
     hash_cmd_events = []
+    sub_tool_use_counts = {}
     seq = 0
 
     def _iter_events(paths):
@@ -123,24 +125,30 @@ def main() -> None:
         seq += 1
         is_sub = bool(ev.get("parent_tool_use_id") or ev.get("subagent_type"))
         st_sub = ev.get("subagent_type")
+        # 子代理文字段落一律按 parent_tool_use_id（＝該次派發的 tool_use_id）分桶，
+        # 不按 subagent_type 分桶——同一 session 內同型別（challenger/verifier）派發
+        # 一輪以上時，按型別分桶的舊邏輯會把不同輪次的文字段落互相覆寫（round2 的
+        # 文字覆蓋掉 round1 尚未被 tool_result 領走的段落），round1 的章面因此消失。
         if ev.get("type") == "assistant" and st_sub in ("challenger", "verifier"):
-            for b in (ev.get("message") or {}).get("content") or []:
-                if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
-                    if sub_segments and sub_segments[-1]["type"] == st_sub and not sub_segments[-1]["closed"]:
-                        sub_segments[-1].update(seq=seq, text=b["text"])
-                    else:
-                        sub_segments.append({"seq": seq, "type": st_sub, "text": b["text"],
-                                             "closed": False, "agent_id": None})
-        if ev.get("type") == "system" and ev.get("subtype") == "task_notification":
-            for s in reversed(sub_segments):
-                if not s["closed"]:
-                    s["closed"] = True
-                    s["agent_id"] = ev.get("task_id")
-                    break
+            pid = ev.get("parent_tool_use_id")
+            if pid:
+                for b in (ev.get("message") or {}).get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                        sub_segments.setdefault(pid, []).append((seq, b["text"]))
+                aid = ev.get("agent_id")
+                if aid:
+                    sub_agent_ids[pid] = aid
+        # 註：agent_id 的單一事實來源已改為 transcript-to-stream.mjs 直接在子事件上
+        # 標註（見上 sub_agent_ids 填值處）；本 harness（Claude Code CLI）不產生
+        # type=system/subtype=task_notification 事件，故不再依賴該事件型別反推歸屬。
         if ev.get("type") == "assistant":
             for b in (ev.get("message") or {}).get("content") or []:
                 if not isinstance(b, dict):
                     continue
+                if is_sub and b.get("type") == "tool_use":
+                    pid = ev.get("parent_tool_use_id")
+                    if pid:
+                        sub_tool_use_counts[pid] = sub_tool_use_counts.get(pid, 0) + 1
                 if b.get("type") == "tool_use" and b.get("name") == "Skill" and not is_sub:
                     skill_loads.append((seq, (b.get("input") or {}).get("skill", "")))
                 if b.get("type") == "tool_use" and b.get("name") == "Bash" and is_sub:
@@ -168,29 +176,39 @@ def main() -> None:
                     d["done_seq"] = seq
                     d["marker"] = extract_marker(txt)
                     d["legacy_verdict"], d["legacy_src"] = legacy_verdict(txt)
-                    m = re.search(r"tool_uses:\s*(\d+)", txt)
+                    m = re.search(r"tool_uses[:>]\s*(\d+)", txt)
                     d["tool_uses"] = int(m.group(1)) if m else None
                     m = re.search(r"agentId:\s*(\w+)", txt)
                     d["agent_id"] = m.group(1) if m else None
 
-    for s in sub_segments:
-        owners = [d for d in dispatches if d["type"] == s["type"] and d["seq"] < s["seq"]]
-        if not owners:
+    for pid, texts in sub_segments.items():
+        d = by_id.get(pid)
+        if not d:
             continue
-        d = max(owners, key=lambda x: x["seq"])
-        mk = extract_marker(s["text"])
+        # 同一次派發可能有多段助理文字（工具呼叫間穿插的說明文字）；末段（seq 最大）
+        # 才是最終回報，優先從末段找章面，找不到再退而找全段落合併文字（防章面前面
+        # 還有一段收尾閒聊、雖屬 non-issue 但不必因此漏抓）。
+        texts_sorted = sorted(texts, key=lambda t: t[0])
+        last_seq, last_text = texts_sorted[-1]
+        mk = extract_marker(last_text) or extract_marker("\n".join(t for _, t in texts_sorted))
         if mk and d["marker"] is None:
             d["marker"] = mk
-        if d["agent_id"] is None and s["agent_id"]:
-            d["agent_id"] = s["agent_id"]
+        if d["agent_id"] is None and sub_agent_ids.get(pid):
+            d["agent_id"] = sub_agent_ids[pid]
         if d["tool_uses"] is None:
-            m = re.search(r"tool_uses:\s*(\d+)", s["text"])
+            m = re.search(r"tool_uses[:>]\s*(\d+)", last_text)
             if m:
                 d["tool_uses"] = int(m.group(1))
 
     hash_verified_ids = {pid for _, pid in hash_cmd_events if pid}
     for d in dispatches:
         d["hash_verified"] = d["tool_use_id"] in hash_verified_ids
+        # 地面真相優先：直接數子代理事件流裡的真實 tool_use 區塊數，
+        # 不依賴子代理自己文字回報裡有沒有嵌入「tool_uses: N」這類字面——
+        # 那個字串格式因 harness／回報模板而異，不可靠；派發事件本身的結構化子事件才是單一事實來源。
+        real_count = sub_tool_use_counts.get(d["tool_use_id"])
+        if real_count is not None:
+            d["tool_uses"] = real_count
 
     claims = []
     for pos, text in main_texts:
