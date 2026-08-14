@@ -4,6 +4,10 @@
 # 由 harness 執行，不在模型控制範圍內——這是「驗章不可跳過」的機制來源：
 #   1. tracker 寫入類 MCP 呼叫，內容若含章戳宣稱（challenge：PASS（…章 X）／驗收章 X），
 #      發文前強制驗章；未過一律拒發。無宣稱的留言免驗放行（plan 留言、批次分支留言等）。
+#      local-file adapter 沒有 MCP 工具可攔——「寫 tracker」實際上是 Write/Edit/MultiEdit
+#      直接寫 specs/<日期>/<slug>/*.md（見 reference/adapters/local-file.md「ID 規則」）。
+#      本 hook 因此**同時**比對 Write/Edit/MultiEdit 對 `.../specs/**/*.md` 的寫入內容，
+#      而不只認 `mcp__*add_comment*` 等工具名稱——否則 local-file adapter 下這道硬閘形同虛設。
 #   2. 任何 Write / Edit / Bash 觸及 ~/.claude/projects/（章源所在）一律擋下——
 #      章的可信度建立在「事件流由 harness 寫、執行者不改」，能改就沒有章可言。
 #
@@ -86,12 +90,35 @@ case "$tool_name" in
 esac
 
 # ── (1) tracker 寫入的章戳驗證 ──────────────────────────────────────────
+# local-file adapter 卡片階段檔路徑樣式：.../specs/<日期>/<slug>/*.md（含 tasks/*.md）。
+LOCAL_FILE_SPEC_MARK='/specs/'
+body=""
 case "$tool_name" in
-  mcp__*add_comment* | mcp__*create_work_item* | mcp__*update_work_item* | mcp__*create_issue* | mcp__*add_issue_comment*) ;;
+  mcp__*add_comment* | mcp__*create_work_item* | mcp__*update_work_item* | mcp__*create_issue* | mcp__*add_issue_comment*)
+    body="$(jq -r '[.tool_input.comment?, .tool_input.body?, .tool_input.text?, .tool_input.content?] | map(select(. != null)) | join("\n")' <<<"$input" 2>/dev/null || true)"
+    ;;
+  Write | Edit | MultiEdit)
+    fp="$(jq -r '.tool_input.file_path // empty' <<<"$input" 2>/dev/null || true)"
+    case "$fp" in
+      *"$LOCAL_FILE_SPEC_MARK"*.md)
+        case "$tool_name" in
+          Write)
+            body="$(jq -r '.tool_input.content // empty' <<<"$input" 2>/dev/null || true)"
+            ;;
+          Edit)
+            body="$(jq -r '.tool_input.new_string // empty' <<<"$input" 2>/dev/null || true)"
+            ;;
+          MultiEdit)
+            body="$(jq -r '[.tool_input.edits[]?.new_string?] | map(select(. != null)) | join("\n")' <<<"$input" 2>/dev/null || true)"
+            ;;
+        esac
+        ;;
+      *) exit 0 ;;
+    esac
+    ;;
   *) exit 0 ;;
 esac
 
-body="$(jq -r '[.tool_input.comment?, .tool_input.body?, .tool_input.text?, .tool_input.content?] | map(select(. != null)) | join("\n")' <<<"$input" 2>/dev/null || true)"
 [ -n "$body" ] || exit 0
 grep -qE 'challenge[：:][[:space:]]*PASS|驗收章' <<<"$body" || exit 0
 
