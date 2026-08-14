@@ -125,9 +125,12 @@ function emitSubagentEvents(subagentsDir, info, toolUseId) {
       continue;
     }
     if (!ev || typeof ev !== 'object' || !ev.type) continue;
-    // audit 以這兩個欄位辨識「這是子代理事件」與「屬於哪次派發」；Claude Code 原生沒有，補上。
+    // audit 以這幾個欄位辨識「這是子代理事件」「屬於哪次派發」「哪個 agent 實例」；
+    // Claude Code 原生沒有，補上。agent_id 直接來自 meta 檔名（單一事實來源），
+    // 不依賴 task_notification 事件（本 harness 未必產生該事件型別）反推。
     ev.subagent_type = info.agentType;
     ev.parent_tool_use_id = toolUseId;
+    ev.agent_id = info.agentId;
     emit(ev);
   }
 }
