@@ -104,7 +104,7 @@ description: 獨立驗收編排者。在 implement 完成後、開 PR 前，先�
 
 驗證者輸入**只有**：AC 清單、diff、Phase 2 的指令輸出證據，以及**任務卡內容**（`getDependencies` + `readItem` 讀回的 description / AC）與 Task 留言的規格勾稽資訊——後兩者屬**規格側工件**（規格如何被分解），送入前**必須剝除上游一切結論性文字**（`challenge：PASS` 宣稱行、處置欄、任何 verdict 措辭），避免驗證者繼承上游判斷。實作推理與對話歷史仍然禁止。
 
-判定規則與輸出格式見 `.claude/agents/verifier.md`（單一來源）。派發 prompt 另指定本輪要跑的防錯檢核：
+判定規則與輸出格式見 `.claude/agents/verifier.md`（單一來源）。派發 prompt **必須註明本卡的卡片編號**（＝父卡 tracker item ID，驗證者逐字抄進章面 `card=`；驗章器據此把收斂判定限縮在單張卡，批次跑多卡時才不會互相牽連）。派發 prompt 另指定本輪要跑的防錯檢核：
 
 | 代號 | 檢核（逐項回報 PASS / FAIL + 證據） |
 |---|---|
@@ -122,7 +122,9 @@ description: 獨立驗收編排者。在 implement 完成後、開 PR 前，先�
 
 整體判定 = Phase 2 全綠 **且** Phase 3 整體 PASS **且** 章戳驗證通過。
 
-**章戳驗證（主編排者執行，非驗證者）**：呼叫 `.claude/skills/spex-stamp/SKILL.md` 對事件流跑確定性稽核——涵蓋上游 Task／Implement 留言的 challenge 章（S1–S6、S8）與本輪 verifier 章（S7）。**exit ≠ 0 → 一律 Fail**，不得以「驗證者說 PASS」覆寫；無事件流的環境（Codex / Copilot）→ 於留言誠實標注「本環境無章可驗」，**不得宣稱驗章通過**。
+**章戳驗證（主編排者執行，非驗證者）**：呼叫 `.claude/skills/spex-stamp/SKILL.md` 對事件流跑確定性稽核——涵蓋上游 Task／Implement 留言的 challenge 章（S1–S6、S8）與本輪 verifier 章（S5、S7、S8）。**exit ≠ 0 → 一律 Fail**，不得以「驗證者說 PASS」覆寫；無事件流的環境（Codex / Copilot）→ 於留言誠實標注「本環境無章可驗」，**不得宣稱驗章通過**。
+
+**內容綁定鐵則**：驗收章的 sha256 綁定驗證者輸出的 `<!-- verify-report:start -->` … `<!-- verify-report:end -->` 區塊。Verify 留言必須**逐字內嵌整段（含前後標記）**——改一個字、把 FAIL 項改寫成 PASS、或自行重排 AC 對照表，內容綁定即失效，驗章 S5 必炸。**驗證者的判定文字不是素材，是受章保護的產物**；編排者只能在區塊之外補充自己的章節（確定性檢查、章戳驗證、下一步）。
 
 #### 全 PASS
 
@@ -136,23 +138,29 @@ description: 獨立驗收編排者。在 implement 完成後、開 PR 前，先�
 ### 確定性檢查
 - 驗證指令束：全綠 | E2E：0 failed | PASS_TO_PASS / FAIL_TO_PASS：通過
 
-### AC 對照表（traceability）
-<驗證者輸出的 AC 對照表>
-
-### 防錯檢核
-<A–G 結果；E 需含缺口層級>
+<驗證者輸出的 verify-report 區塊，含前後標記逐字內嵌——內含 AC 對照表、防錯檢核 A–G、non-blocking 備註三節>
 
 ### 章戳驗證
 <spex-stamp exit code 與稽核摘要；無事件流環境標注「本環境無章可驗」>
-
-### non-blocking 備註
-<若有>
 
 ### 下一步
 `spex-pull-request`
 
 驗收章 <章號>
 ```
+
+> 內嵌後的樣子（`<!-- … -->` 兩行是綁定範圍的界線，**必須保留**）：
+>
+> ```
+> <!-- verify-report:start -->
+> ### AC 對照表（traceability）
+> …
+> ### 防錯檢核
+> …
+> ### non-blocking 備註
+> …
+> <!-- verify-report:end -->
+> ```
 
 提示使用者：「獨立驗收通過，可執行 `/spex-pull-request` 開立 PR。」
 
@@ -213,7 +221,7 @@ description: 獨立驗收編排者。在 implement 完成後、開 PR 前，先�
 - [ ] Phase 3 以全新上下文派發（Claude Code 用 `subagent_type: verifier`）；每條 AC 有 verdict + 證據
 - [ ] 防錯檢核 A–G 逐項有結果；E 已標缺口層級
 - [ ] Phase 4 已跑 `spex-stamp` 驗章並記錄 exit code；無事件流環境已誠實標注
-- [ ] PASS 留言含 `驗收章 <章號>`；Fail 重做清單含缺口層級與路由
+- [ ] PASS 留言含 `驗收章 <章號>`，且逐字內嵌驗證者的 `verify-report` 區塊（含前後標記，未經潤飾）；Fail 重做清單含缺口層級與路由
 - [ ] Phase 4 留言已展示並經確認後寫入；Fail 時含結構化重做清單
 - [ ] Fail 時已捕捉教訓到 `.claude/lessons/`（去重 / `recurrence` 已更新）；`recurrence ≥ 2` 已提出升級提案（由主編排者、非驗證者）
 

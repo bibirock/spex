@@ -8,6 +8,7 @@ import unicodedata
 
 MARKER_RE = re.compile(
     r"\[(CHALLENGE|VERIFIER)-VERDICT(?:\s+stage=([\w-]+))?(?:\s+round=(\d+))?"
+    r"(?:\s+card=([\w.\-]+))?"
     r"\s+verdict=(PASS|FAIL)(?:\s+sha256=([0-9a-f]{8,64}))?[^\]]*\]"
 )
 STAMP_ID = r"(?:agentId\s+)?(toolu_[\w]+|a[0-9a-f]{15,})"
@@ -15,6 +16,11 @@ CLAIM_RE = re.compile(
     r"challenge\s*[:：]\s*PASS（[^）]*?第\s*(\d+)\s*輪[^）]*?(?:[｜|]\s*章[：:\s]\s*" + STAMP_ID + r")?[^）]*?）"
 )
 VERIFIER_CITE_RE = re.compile(r"驗收章[：:\s]\s*" + STAMP_ID)
+# verifier 報告本體的界定標記：驗收章的 sha256 綁定這段區間內的內容（見 check_strict
+# 的 verify 分支）。Verify 完成留言必須逐字內嵌整段（含前後標記），編排者不得潤飾。
+VERIFY_REPORT_RE = re.compile(
+    r"<!--\s*verify-report:start\s*-->(.*?)<!--\s*verify-report:end\s*-->", re.S
+)
 BOILERPLATE_RE = re.compile(r"agentId:\s*\w+.*$|<usage>.*?</usage>", re.S)
 HASH_CMD_RE = re.compile(r"sha256|shasum|createHash", re.I)
 STAGE_OF_HEAD = [
@@ -54,11 +60,25 @@ def normalize_hash(text: str) -> str:
 
 
 def strip_claim_lines(body: str) -> str:
+    # 剝掉的是「路由/宣稱 metadata」，不是圍欄本體：
+    #   - 引章宣稱行（challenge：PASS(...) / 驗收章：...）
+    #   - `## challenge：` 佔位標題（未回填章號前的暫定行）
+    #   - `<!-- spex:entry seq=N at=... -->` append-only 留言檔格式標記（見
+    #     reference/adapters/local-file.md「留言檔格式」）——由 addComment 寫入步驟
+    #     prepend，屬 skill 圍欄本體之外的 adapter 結構性 metadata，各階段 skill
+    #     從未把這行送進 challenger/verifier 的圍欄。
+    # 注意：`## [Spex] <Phase> 完成` 這類 phase 標題**不**在此剝除清單——
+    # spex-task／spex-implement／spex-selfcheck 的完成留言範本首行皆為這個標題，
+    # 圍欄本體逐字包含它一起送去蓋章，與 `<!-- spex:entry -->` 這種 adapter 才附加
+    # 的 metadata 性質不同。曾短暫在此加過標題剝除，結果反而打壞 Implement／Verify
+    # 本來就正確綁定的章——公約要統一在各 skill 的圍欄範本，不是在驗章器代剝。
     kept = []
     for ln in body.split("\n"):
         if CLAIM_RE.search(ln) or VERIFIER_CITE_RE.search(ln):
             continue
         if re.match(r"^#+\s*challenge\s*[:：]", ln.strip()):
+            continue
+        if re.match(r"^<!--\s*spex:entry\b.*-->$", ln.strip()):
             continue
         kept.append(ln)
     return "\n".join(kept)
@@ -74,8 +94,9 @@ def result_text(block) -> str:
 def extract_marker(text: str):
     ms = MARKER_RE.findall(text)
     if ms:
-        kind, stage, rnd, verdict, sha = ms[-1]
-        return {"kind": kind, "stage": (stage or "").lower() or None, "round": int(rnd) if rnd else None, "verdict": verdict, "sha256": sha or None}
+        kind, stage, rnd, card, verdict, sha = ms[-1]
+        return {"kind": kind, "stage": (stage or "").lower() or None, "round": int(rnd) if rnd else None,
+                "card": card or None, "verdict": verdict, "sha256": sha or None}
     return None
 
 
@@ -266,19 +287,23 @@ def main() -> None:
             )
 
     if not legacy:
-        latest_by_stage = {}
+        # 分組鍵含 card：批次（spex-schedule）在單一 session 連跑多張卡時，B 卡 round1 的
+        # FAIL 不該讓已收斂的 A 卡跟著被判未收斂。舊事件流的章沒有 card 欄位，一律落在
+        # card=None 這組，行為與加欄位前完全相同。
+        latest_by_key = {}
         for d in ch:
             if not d.get("done_seq") or not d.get("marker"):
                 continue
-            st = (d["marker"] or {}).get("stage")
-            cur = latest_by_stage.get(st)
+            key = ((d["marker"] or {}).get("stage"), (d["marker"] or {}).get("card"))
+            cur = latest_by_key.get(key)
             if cur is None or d["done_seq"] > cur["done_seq"]:
-                latest_by_stage[st] = d
-        for st, d in latest_by_stage.items():
+                latest_by_key[key] = d
+        for (st, card), d in latest_by_key.items():
             v = (d.get("marker") or {}).get("verdict")
             if v != "PASS":
+                scope = f"stage={st}" + (f" card={card}" if card else "")
                 violations.append(
-                    f"S2-收斂 stage={st} 最新 challenger 章面 verdict={v}（seq={d['seq']}，done@{d['done_seq']}）："
+                    f"S2-收斂 {scope} 最新 challenger 章面 verdict={v}（seq={d['seq']}，done@{d['done_seq']}）："
                     f"FAIL/未收斂不可蓋章，須修正後重詰取 PASS 章才可交棒"
                 )
 
@@ -305,9 +330,20 @@ def main() -> None:
                 )
             if c["stage"] and mk["stage"] and mk["stage"] != c["stage"]:
                 violations.append(f"S3 章面 stage={mk['stage']} 與留言 stage={c['stage']} 不符{tag}")
-            same_stage = [x for x in ch if x["marker"] and x["marker"]["stage"] == (mk["stage"] or c["stage"])]
-            if len(same_stage) > MAX_ROUNDS:
-                violations.append(f"S4 stage={mk['stage'] or c['stage']} 的章共 {len(same_stage)} 枚（>上限{MAX_ROUNDS}）：應升級人工")
+            # 輪次上限是「每張卡每個 stage」，不是整份事件流。批次（spex-schedule）在單一
+            # session 連跑多張卡時，每張卡的 task 章都會落在同一份 transcript 裡；只依 stage
+            # 分組會讓第 4 張卡即使首輪就 PASS 也被判超限。分組鍵直接取被引用那枚章的 card，
+            # 不必回頭解析留言本體去猜卡片編號。舊事件流的章沒有 card 欄位，一律落在
+            # card=None 這組，行為與加欄位前完全相同。
+            same_scope = [
+                x for x in ch
+                if x["marker"]
+                and x["marker"]["stage"] == (mk["stage"] or c["stage"])
+                and x["marker"].get("card") == mk.get("card")
+            ]
+            if len(same_scope) > MAX_ROUNDS:
+                scope = f"stage={mk['stage'] or c['stage']}" + (f" card={mk['card']}" if mk.get("card") else "")
+                violations.append(f"S4 {scope} 的章共 {len(same_scope)} 枚（>上限{MAX_ROUNDS}）：應升級人工")
             s5_ok = False
             if mk["sha256"]:
                 if not d.get("hash_verified"):
@@ -337,6 +373,34 @@ def main() -> None:
                 violations.append(f"S7 驗收章 {c['stamp']} 不存在 / 非 verifier / 未完成於宣稱前{tag}")
             elif not mk or mk["kind"] != "VERIFIER" or mk["verdict"] != "PASS":
                 violations.append(f"S7 驗收章 {c['stamp']} 無結構化 PASS 標記（marker={mk}）{tag}")
+            else:
+                # S5/S8 內容綁定（與 challenge 路徑對稱）。沒有這一段，驗收章只證明
+                # 「有跑過一次 verifier 且它說 PASS」，Verify 留言裡的 AC 對照表與防錯
+                # 檢核結果寫什麼都不受章約束——編排者可以把 FAIL 項改寫成 PASS、或整段
+                # 重寫成沒驗過的內容，章照樣對得上。
+                # 綁定對象不是整份留言：留言的「章戳驗證」節記的是本次稽核自己的結果
+                # （雞生蛋問題），「確定性檢查」節則是 verifier 派發前就已知的事實。真正
+                # 需要綁定的是 verifier 產出的那段報告，故以 verify-report 標記界定範圍。
+                if not mk["sha256"]:
+                    violations.append(f"S5 驗收章 {c['stamp']} 缺 sha256 內容綁定{tag}")
+                elif not d.get("hash_verified"):
+                    violations.append(
+                        f"S8 驗收章 {c['stamp']} 面含 sha256 但子代理執行軌跡內找不到真實雜湊計算工具呼叫"
+                        f"（Bash 內容含 sha256/shasum/createHash）：疑似編造章面，不可採信{tag}"
+                    )
+                else:
+                    rm = VERIFY_REPORT_RE.search(c["body"])
+                    if not rm:
+                        violations.append(
+                            f"S5 Verify 留言找不到 <!-- verify-report:start --> … <!-- verify-report:end --> 區塊"
+                            f"：驗收章綁定的是 verifier 的報告本體，留言須逐字內嵌該區塊{tag}"
+                        )
+                    else:
+                        h = normalize_hash(strip_claim_lines(rm.group(1)))
+                        if not h.startswith(mk["sha256"][: len(h)]) and not mk["sha256"].startswith(h[: len(mk["sha256"])]):
+                            violations.append(
+                                f"S5 內容綁定不符：章面 sha256={mk['sha256']}，留言 verify-report 區塊雜湊={h}{tag}"
+                            )
             if c["stamp"] in consumed:
                 violations.append(f"S6 驗收章 {c['stamp']} 重複使用{tag}")
             consumed[c["stamp"]] = c["seq"]

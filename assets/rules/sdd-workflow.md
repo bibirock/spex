@@ -276,7 +276,7 @@ PR 合併前必須 100% 通過：
 
 > 核心命題：**做事的人不能自評**。每個階段的產出在寫進 tracker 或交棒前，先由一個全新上下文、唯讀、立場敵對的 `challenger` 逐項詰問；未過不得交棒。執行協定見 `.claude/skills/spex-challenge/SKILL.md`。
 
-- **詰問輪次上限（唯一來源，調整只改本行）：3**（含首輪，＝2 次重詰）。第 3 輪仍 FAIL → 停止並升級人工；**此上限由驗章器程式碼硬執行**（宣稱輪次超限或同 stage 章數超限 → 產物一律無效），第 4 輪起即使 challenger 回 PASS 也不放行。
+- **詰問輪次上限（唯一來源，調整只改本行）：3**（含首輪，＝2 次重詰）。第 3 輪仍 FAIL → 停止並升級人工；**此上限由驗章器程式碼硬執行**（宣稱輪次超限或同 stage 章數超限 → 產物一律無效），第 4 輪起即使 challenger 回 PASS 也不放行。**上限的計算範圍是「每張卡每個 stage」**：章面的 `card=<卡片編號>` 是分組依據，批次（`spex-schedule`）在單一 session 連跑多張卡時，各卡的輪次互不累加、某卡的 FAIL 也不會讓別卡被判未收斂。派發時漏註明卡片編號 → 章面缺 `card` → 該 stage 全部的章退回整份事件流一起計數，多卡批次必被誤擋。
 - **詰問接點範圍（唯一來源）：`task`（子卡建立前）、`implement`（Implement 完成留言寫入前）**。`selfcheck` 走 `verifier` 的獨立驗收章，不在 challenge 範圍；`plan` / `fixbug` 目前不設接點。
 - **判準錨定**：blocking FAIL 必須錨定「卡片規格原文」或「可靠性判準」（假證據／假綠／範圍外變更／隔離破口）二者之一；無法錨定者一律 non-blocking。防止詰問淪為無限追問與過度設計壓力。
 - **verdict 不可改判**：PASS 的唯一證據＝最後一輪 challenger 原文輸出整體 PASS。呼叫階段不得以「修正已納入」「FAIL 數下降」等理由自行宣告 PASS。
@@ -296,7 +296,7 @@ PR 合併前必須 100% 通過：
 | 章號 | Agent 派發事件的 `tool_use_id`（`toolu_…`）或回傳的 `agentId` | harness 生成，模型無法鑄造、天然不重複 |
 | 章面 | 子代理輸出末行 `[CHALLENGE-VERDICT …]` / `[VERIFIER-VERDICT …]` | 位於子代理事件內，主 agent 的文字偽造不進去 |
 | 載體 | 事件流，**一律在目標 repo 之外**（Claude Code＝`~/.claude/projects/`<!-- spex:sandbox-only:start -->；沙盒＝host 影子流<!-- spex:sandbox-only:end -->） | 由 harness 寫入，受 PreToolUse 硬閘保護<!-- spex:sandbox-only:start -->；沙盒平面更進一步：容器物理寫不到<!-- spex:sandbox-only:end --> |
-| 內容綁定 | 章面 `sha256`（NFC → 空白摺疊 → trim → 前 16 hex） | 舊章蓋不了改過的內容（防重放） |
+| 內容綁定 | 章面 `sha256`（NFC → 空白摺疊 → trim → 前 16 hex）。challenge 章綁 `challenge-draft` 圍欄；驗收章綁 verifier 報告的 `<!-- verify-report:start/end -->` 區塊 | 舊章蓋不了改過的內容（防重放）；驗證者的判定文字也改不動 |
 | 消耗帳 | 一章一用 | 用過的章不能支持第二個宣稱 |
 
 ### 不變式（由 `challenge-audit.py` 程式硬執行）
@@ -307,7 +307,7 @@ PR 合併前必須 100% 通過：
 
 1. **驗章者＝程式**：一律由 `.claude/skills/spex-stamp/SKILL.md` 呼叫 `challenge-audit.py` 裁定。**exit ≠ 0 → 不得寫留言、不得交棒、不得開 PR**；結果不可被 LLM 改判。
 2. **自書章行＝偽造**：執行者絕對禁止自行補寫章面、自算 sha256、或以「內容看起來通過」推斷 PASS。事件層驗章會識破，該接點全作廢並記做假訊號。
-3. **蓋章後不得潤飾**：留言本體必須逐字等於受審圍欄，唯一允許的差異是追加引章宣稱行。改一個字內容綁定就失效。
+3. **蓋章後不得潤飾**：留言本體必須逐字等於受審圍欄；`spex-selfcheck` 的 Verify 留言則須逐字內嵌驗證者的 `verify-report` 區塊（含前後標記），編排者只能在區塊之外補自己的章節——把驗證者的 FAIL 項改寫成 PASS、或重排 AC 對照表，內容綁定即失效。內容綁定雜湊前只會剝除兩類 adapter/協定層 metadata（`challenge-audit.py` 的 `strip_claim_lines`）：追加的引章宣稱行、`<!-- spex:entry seq=N at=… -->` append-only 留言檔格式標記（local-file adapter 寫入步驟才 prepend，見 `reference/adapters/local-file.md`「留言檔格式」）——這兩類之外，改一個字內容綁定就失效。**`## [Spex] <Phase> 完成` 這類 phase 標題不在剝除之列**：`spex-task`／`spex-implement`／`spex-selfcheck` 的完成留言範本首行皆為這個標題，圍欄本體逐字包含它一起送去蓋章——local-file adapter 靠 `content` 第一行路由到對應階段檔（見 `reference/adapters/local-file.md`「`TRACKER.addComment`」），這行本就落在圍欄內，驗章器不代剝，否則會破壞已經正確綁定的章。
 4. **真實子卡 ID 不進蓋章本體**：ID 在開卡後才存在，混進本體會使章綁不到最終留言；ID 事實走獨立留言，可由 `getDependencies` 直接重新推導。
 
 ### 平面 ↔ 驗章硬閘（安裝版本決定）

@@ -44,7 +44,7 @@ description: 對抗式詰問硬閘門。在 task / implement 的產出寫入 tra
 
 以 Agent 工具派發 `challenger`（不指定模型），逐項詰問並回 verdict + 證據。**同步鐵則：必須同步等待 challenger 回傳（`run_in_background: false`）**——未取得 challenger 回傳**原文**前，禁止進入 Phase 3 判定與任何後續步驟；非同步派發後自行推測／代寫 verdict = 造假，等同 FAIL 並記教訓。
 
-**蓋章協定**：派發 prompt 必須（1）註明本次接點 stage 與輪次 round；（2）將受審草稿**逐字**放入圍欄區塊：
+**蓋章協定**：派發 prompt 必須（1）註明本次接點 stage、輪次 round 與**卡片編號 card**（＝本次詰問所屬 tracker item 的 ID；驗章器據此把輪次上限與收斂判定限縮在單張卡，批次跑多卡時才不會互相牽連——缺 card 時整份事件流的同 stage 章會累加，第 4 張卡即使首輪就 PASS 也會被判超限）；（2）將受審草稿**逐字**放入圍欄區塊：
 
 ````
 ```challenge-draft

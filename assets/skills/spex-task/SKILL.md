@@ -111,6 +111,8 @@ description: 根據 tracker 相關留言區的 task 把實作工作拆解成可�
 產生後回寫 TRACKER：
 
 ````
+## [Spex] Task 完成
+
 # 任務清單 — <功能>
 
 > Tracker Item: <ID> | 階段: Task | Tier: <1/2> | 日期: <DATE>
@@ -234,7 +236,7 @@ exit ≠ 0 → 依違規清單修正草稿後重跑，**不進詰問**（別讓 
 
 呼叫 `.claude/skills/spex-challenge/SKILL.md`，stage = `task`、round = 本輪輪次。
 
-- **圍欄內容（`challenge-draft`）＝ Phase 4 的任務清單草稿本體逐字**——即之後要寫進 Task 留言的內容。**絕不含**引章宣稱行、`## challenge：` 佔位標題，也**不含任何真實子卡 ID**（此時尚未開卡；ID 事實走 Phase 5.5 的獨立留言，不進章的綁定範圍）。
+- **圍欄內容（`challenge-draft`）＝ Phase 4 的任務清單草稿本體逐字**（含首行 `## [Spex] Task 完成` 標題——與 `spex-implement` 的完成留言範本同一慣例：標題是圍欄本體的一部分，一起送去蓋章，local-file adapter 靠這行路由到 `task.md`，見 `reference/adapters/local-file.md`「`TRACKER.addComment`」）——即之後要寫進 Task 留言的內容。**絕不含**引章宣稱行、`## challenge：` 佔位標題，也**不含任何真實子卡 ID**（此時尚未開卡；ID 事實走 Phase 5.5 的獨立留言，不進章的綁定範圍）。
 - 詰問輸入另附：規格原文、Plan 留言、證據包（預計修改檔案清單、關鍵決策的 `file:line` 出處）。
 - **禁止**餵入本次拆卡的推理過程與對話歷史。
 
