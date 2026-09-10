@@ -1,12 +1,12 @@
 import path from 'node:path';
 import prompts from 'prompts';
-import { listInstallers, getInstaller, type InstallMode } from '../installers/base.js';
-import { applyInstallMode } from '../transformers/install-mode.js';
+import { listInstallers, getInstaller } from '../installers/base.js';
 import {
   loadSkillsFromAssets,
   loadReferencesFromAssets,
   loadRulesFromAssets,
   loadSubagentsFromAssets,
+  loadHooksFromAssets,
   getSkillDescription,
 } from '../transformers/parse-skill.js';
 import { getAssetsDir } from '../utils/paths.js';
@@ -31,8 +31,6 @@ import '../installers/codex.js';
 
 export interface InitOptions {
   agent?: string;
-  /** 安裝版本；未指定則互動式詢問（`-y` 時預設 agent） */
-  mode?: InstallMode;
   cwd: string;
   force: boolean;
   yes: boolean;
@@ -44,6 +42,7 @@ export async function runInit(opts: InitOptions): Promise<void> {
   const loadedReferences = await loadReferencesFromAssets(assetsDir);
   const loadedRules = await loadRulesFromAssets(assetsDir);
   const loadedSubagents = await loadSubagentsFromAssets(assetsDir);
+  const hooks = await loadHooksFromAssets(assetsDir);
 
   if (loadedSkills.length === 0) {
     log.error('找不到任何 skills，請先執行 `npm run sync-assets`。');
@@ -92,17 +91,10 @@ export async function runInit(opts: InitOptions): Promise<void> {
     process.exit(1);
   }
 
-  // 1.5 選安裝版本（章戳鏈的平面）。預設 agent——沙盒版 host 與沙盒兩端各是一個 AI，
-  // 兩邊都得完整理解需求並來回溝通，token 開銷 2 倍以上，只在需要嚴格隔離執行環境時才划算。
-  const mode = await resolveMode(opts);
-
-  // 依版本過濾資產、剝除沙盒專屬段落，讓 installer 保持模式無關
-  const { skills: allSkills, references, rules, subagents } = applyInstallMode(mode, {
-    skills: loadedSkills,
-    references: loadedReferences,
-    rules: loadedRules,
-    subagents: loadedSubagents,
-  });
+  const allSkills = loadedSkills;
+  const references = loadedReferences;
+  const rules = loadedRules;
+  const subagents = loadedSubagents;
 
   // 2. 選 skills
   let skillsToInstall = allSkills;
@@ -128,20 +120,20 @@ export async function runInit(opts: InitOptions): Promise<void> {
   }
 
   // 3. 執行安裝
-  log.step(`開始安裝到 ${installer.displayName} (${opts.cwd})，版本：${MODE_LABEL[mode]}`);
+  log.step(`開始安裝到 ${installer.displayName} (${opts.cwd})`);
   await installer.install({
     cwd: opts.cwd,
-    mode,
     skills: skillsToInstall,
     references,
     rules,
     subagents,
+    hooks,
     force: opts.force,
     log: log.dim,
   });
 
   log.success(`安裝完成（${skillsToInstall.length} 個 skills、${rules.length} 個 rules）`);
-  printModeSummary(mode, installer.id);
+  printInstallSummary(installer.id);
 
   // 4. （選用）安裝 Playwright 相關開發工具（VS Code 擴充 + npm devDependencies）
   // Playwright 只是預設規則 rules/testing.md 所採用的 E2E 工具之一；
@@ -189,70 +181,14 @@ export async function runInit(opts: InitOptions): Promise<void> {
   log.info('下一步：執行 `spex mcp setup` 設定 MCP server 與環境變數');
 }
 
-const MODE_LABEL: Record<InstallMode, string> = {
-  agent: 'agent（無沙盒）',
-  sandbox: 'sandbox（Docker 沙盒）',
-};
-
-/** 決定安裝版本：`--mode` / `--sandbox` 指定優先，其次互動式詢問，`-y` 一律 agent。 */
-async function resolveMode(opts: InitOptions): Promise<InstallMode> {
-  if (opts.mode) return opts.mode;
-  if (opts.yes) {
-    log.info(`使用安裝版本：${MODE_LABEL.agent}`);
-    return 'agent';
-  }
-
-  const ans = await prompts({
-    type: 'select',
-    name: 'mode',
-    message: '要安裝哪一種版本？',
-    choices: [
-      {
-        title: 'agent — 無沙盒（推薦，一般情況用這個）',
-        description: '驗章走 Agent 子代理 + PreToolUse 硬閘；寫碼與驗證在同一份原始碼樹',
-        value: 'agent',
-      },
-      {
-        // 成本寫進 title 而非只放 description——prompts 只顯示「當前游標項」的 description，
-        // 放在 description 會讓使用者選到才看見「貴 2 倍」，等於沒有提前警示。
-        title: 'sandbox — Docker 沙盒（token 開銷 2 倍以上）',
-        description:
-          'host 與沙盒兩端 AI 各自理解需求並來回溝通，故開銷加倍；僅在執行程式碼須嚴格限制環境（零憑證、封 egress）時使用',
-        value: 'sandbox',
-      },
-    ],
-    initial: 0,
-  });
-  // 使用者中途 Ctrl+C → 取消整個安裝，不要靜默落到預設值
-  if (!ans.mode) {
-    log.warn('已取消');
-    process.exit(0);
-  }
-  return ans.mode as InstallMode;
-}
-
-/** 印出本次安裝的平面資訊與後續步驟（沙盒版還要提醒第二支 hook 的手動合併）。 */
-function printModeSummary(mode: InstallMode, agentId: string): void {
-  const isClaude = agentId === 'claude-code';
+/** 印出本次安裝的落點與後續步驟。 */
+function printInstallSummary(agentId: string): void {
   log.info('');
-  if (mode === 'agent') {
-    log.dim('  安裝版本：agent（無沙盒）— 未安裝沙盒協定與 relay 文件');
-    if (isClaude) {
-      log.dim('  章戳硬閘：PreToolUse hook（--plane agent），章源為本 session 事件流');
-    }
-    return;
+  log.dim('  下一步：');
+  log.info('    1. 依專案填寫 rules/commands.md 與 rules/testing.md 的 TODO 欄位');
+  if (agentId === 'claude-code' || agentId === 'codex') {
+    log.info('    2. 在 hooks/spex-hooks.env 填入本專案的 lint / format 指令（留空即停用該支 hook）');
   }
-
-  log.dim('  安裝版本：sandbox（Docker 沙盒）— 已安裝沙盒協定、樣板與 relay 文件');
-  if (isClaude) {
-    log.dim('  章戳硬閘：驗章由 relay 執行檔裁定；PreToolUse hook 轉為 --plane sandbox，');
-    log.dim('            只擋「host 直接以 MCP 發出含章留言」，不再拿 transcript 驗章');
-  }
-  log.info('');
-  log.dim('  下一步（沙盒版）：');
-  log.info('    1. 執行 /spex-sandbox-init 生成實際沙盒檔案');
-  log.info('    2. 依 .claude/settings.sandbox-snippet.json 手動合併 sandbox-guard.sh hook');
-  log.warn('       兩支 PreToolUse hook 並存，合併時「只增不換」——勿覆蓋 spex 既有的章戳硬閘條目');
 }
 
 function printPlaywrightConfigGuide(skipped: boolean): void {

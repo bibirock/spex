@@ -7,8 +7,8 @@
  *    現為主要維護來源，若已在本地編輯過 skills / reference，執行前請先確認
  *    要保留的變更已備份或已同步回上游，否則會被覆蓋。
  *
- * 注意：`assets/rules/` 為本 repo 在地撰寫的專案規則，**不**列為同步目標，
- *       本腳本不會動到它。
+ * 注意：`assets/rules/`、`assets/agents/`、`assets/hooks/` 為本 repo 在地撰寫，
+ *       **不**列為同步目標，本腳本不會動到它們。
  *
  * 使用方式：
  *   node scripts/sync-assets.mjs                    # 用預設來源路徑

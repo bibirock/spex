@@ -6,6 +6,7 @@ import type {
   ReferenceSource,
   RuleSource,
   SubagentSource,
+  HookSource,
 } from '../installers/base.js';
 
 /** 從 assets/skills/ 載入所有 skill */
@@ -106,7 +107,7 @@ export async function loadRulesFromAssets(
   return results.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
-/** 從 assets/agents/ 載入所有 subagent 定義（challenger / verifier 等，只取頂層 .md） */
+/** 從 assets/agents/ 載入所有 subagent 定義（code-reviewer / verifier，只取頂層 .md） */
 export async function loadSubagentsFromAssets(
   assetsDir: string,
 ): Promise<SubagentSource[]> {
@@ -131,6 +132,32 @@ export async function loadSubagentsFromAssets(
           : entry.name.replace(/\.md$/, ''),
       relativePath: entry.name,
       content: raw,
+    });
+  }
+  return results.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+/**
+ * 從 assets/hooks/ 載入編輯期 hook 資產（只取頂層檔案）。
+ * `.env` 結尾者視為專案自行維護的設定檔，安裝時不覆寫既有內容。
+ */
+export async function loadHooksFromAssets(assetsDir: string): Promise<HookSource[]> {
+  const hooksDir = path.join(assetsDir, 'hooks');
+  const exists = await fs
+    .access(hooksDir)
+    .then(() => true)
+    .catch(() => false);
+  if (!exists) return [];
+
+  const entries = await fs.readdir(hooksDir, { withFileTypes: true });
+  const results: HookSource[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const content = await fs.readFile(path.join(hooksDir, entry.name), 'utf8');
+    results.push({
+      relativePath: entry.name,
+      content,
+      isConfig: entry.name.endsWith('.env'),
     });
   }
   return results.sort((a, b) => a.relativePath.localeCompare(b.relativePath));

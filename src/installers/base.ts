@@ -30,19 +30,35 @@ export interface RuleSource {
 }
 
 /**
- * subagent 定義（`assets/agents/*.md`）— challenger / verifier（章戳鏈）與 code-reviewer（品質審查）。
- * 章戳鏈要求詰問者與驗收者是「全新上下文、唯讀」的獨立 subagent，且派發時以
- * `subagent_type` 指名；沒有註冊的 agent 定義就派不出去，所以這是 skill 之外的
- * 獨立資產型別。目前只有 Claude Code 有原生 subagent 機制（`.claude/agents/`），
- * Copilot / Codex 無對應落點，由各 installer 自行決定如何誠實標註。
+ * subagent 定義（`assets/agents/*.md`）— code-reviewer（Epic 整體審查）與 verifier（獨立驗收）。
+ * 兩者都要求「全新上下文、唯讀」的獨立子代理，且派發時以 `subagent_type` 指名；
+ * 沒有註冊的 agent 定義就派不出去，所以這是 skill 之外的獨立資產型別。
+ * 各 installer 依自身平面決定落點與格式（Claude Code `.claude/agents/*.md`、
+ * Codex `.codex/agents/*.toml`）；無原生子代理機制的平面誠實標註。
  */
 export interface SubagentSource {
   /** agent 名稱（frontmatter name，fallback 為檔名主體）— 即派發時的 subagent_type */
   name: string;
-  /** 相對於 assets/agents/ 的路徑，例如 "challenger.md" */
+  /** 相對於 assets/agents/ 的路徑，例如 "verifier.md" */
   relativePath: string;
   /** 原始檔內容（含 frontmatter）— 直接寫入目標專案 */
   content: string;
+}
+
+/**
+ * 編輯期 hook 資產（`assets/hooks/`）— 代理異動單檔後跑的 lint 與格式化。
+ * 兩支腳本讀同目錄的 `spex-hooks.env` 取得專案指令；指令留空即靜默停用，
+ * 因此腳本本身可無條件安裝，由專案決定何時啟用。
+ */
+export interface HookSource {
+  /** 相對於 assets/hooks/ 的路徑，例如 "spex-lint-edited-file.sh" */
+  relativePath: string;
+  content: string;
+  /**
+   * 是否為專案自行維護的設定檔（`spex-hooks.env`）。
+   * 設定檔即使帶 `--force` 也不覆寫——那裡面是使用者填的專案指令。
+   */
+  isConfig: boolean;
 }
 
 /**
@@ -60,105 +76,6 @@ export function getRuleSkills(frontmatter: Record<string, unknown>): string[] {
     .filter(Boolean);
   return [...new Set(cleaned)];
 }
-
-/**
- * spex 治理的「繞過管道」指令家族（MCP-only 政策的**中層**防護）。
- * 這些是 AI 可能用來繞過受控 MCP/TRACKER、直打底層 API/CLI 的指令前綴：
- * raw HTTP（`curl` / `wget`）、ADO work item CLI（`az boards`）、GitHub API CLI（`gh api`）。
- * 各 installer 把它翻譯成原生格式（Claude `permissions.deny`、Copilot `denyList`、
- * Codex sandbox 封網路），讓「繞過 MCP」這條路在權限/sandbox 層就跑不起來。
- *
- * 刻意**不**含 `az repos pr create` / `gh pr create`——開 PR 自 v0.9.0 起是一般流程，
- * 不再有專屬防護（防護改押在合併端，見 `SPEX_MERGE_DENY_COMMANDS`）。
- *
- * 此常數是「一份來源、多 agent 落地」的單一來源，也是 uninstall 的所有權清單依據：
- * 各 installer 只移除由它翻譯出、與當前內容完全相符的項目，使用者自訂規則一律保留。
- *
- * 註：本層對 compound command、wrapper、env-var 內插等變體較脆弱；不可繞過的執行期
- * 硬擋（PreToolUse exit-2 hook）為**另案**，本常數不負責。
- */
-export const SPEX_BYPASS_COMMANDS: readonly string[] = [
-  'curl',
-  'wget',
-  'az boards',
-  'gh api',
-];
-
-/**
- * 安裝版本（平面）——決定裝哪些資產、以及章戳鏈的驗章硬閘落在哪裡。
- * - `agent`（預設）：無沙盒。寫碼與驗證都在同一份原始碼樹，章源＝本 session 事件流，
- *   驗章硬閘＝Claude Code 的 PreToolUse hook（`spex-stamp-guard.sh --plane agent`）。
- * - `sandbox`：加裝 Docker 沙盒協定與 relay。章源＝host 影子流（容器物理寫不到），
- *   驗章硬閘＝relay 執行檔自身；hook 轉為 `--plane sandbox`，只擋「host 直發含章留言」。
- */
-export type InstallMode = 'agent' | 'sandbox';
-
-/**
- * 只有沙盒平面用得到的 skill——`agent` 模式不安裝。
- * 此常數是模式過濾的單一來源（`transformers/install-mode.ts` 依它篩選）。
- */
-export const SPEX_SANDBOX_ONLY_SKILLS: readonly string[] = [
-  'spex-sandbox-init',
-  'spex-relay-init',
-];
-
-/**
- * 只有沙盒平面用得到的 reference（比對 `ReferenceSource.relativePath` 前綴）。
- * 注意 `spex/scripts/` 底下的腳本（challenge-audit / transcript-to-stream /
- * spex-stamp-guard / spex-merge-guard / task-draft-lint）**兩種模式都要裝**，不列在此。
- */
-export const SPEX_SANDBOX_ONLY_REFERENCES: readonly string[] = [
-  'sandboxes/',
-  'spex/relay-protocol.md',
-];
-
-/**
- * 合併 PR 的 CLI 指令家族——**沒有任何非合併用途**，故可在字面層直接 deny。
- * `gh pr review` / `az repos pr set-vote` 列入是因為自我核准等於變相放行合併
- * （branch policy 湊足票數後 PR 即可被合）。
- *
- * 刻意**不含** `az repos pr update`：它同時是改 title / description 的正常通道，
- * 只有帶 `--status completed` 才是合併——那要靠 `spex-merge-guard.sh` 逐引數判定。
- * 更刻意**不含** `git push`：feature 分支推送是 `spex-pull-request` 的必經步驟，
- * 只有推到保護分支才算繞過 PR，同樣只能由 hook 解析目標分支後判定。
- *
- * 此常數是「一份來源、多 agent 落地」的單一來源，也是 uninstall 的所有權清單依據。
- */
-export const SPEX_MERGE_DENY_COMMANDS: readonly string[] = [
-  'gh pr merge',
-  'gh pr review',
-  'az repos pr set-vote',
-];
-
-/**
- * 受保護分支：直接推送等於完全繞過 PR 審查。
- * 來源＝`assets/rules/sdd-workflow.md`「Branch Policy」（`master`/`main` 不可直接 commit/merge；
- * PR 目標分支須為 `dev`/`develop`/`development` 之一）——改這裡要同步改那份規則。
- * 目標專案分支命名不同時，可用 `SPEX_PROTECTED_BRANCHES` 環境變數覆寫（逗號分隔），
- * 不必改動已安裝的 hook 腳本。
- */
-export const SPEX_PROTECTED_BRANCHES: readonly string[] = [
-  'main',
-  'master',
-  'dev',
-  'develop',
-  'development',
-];
-
-/**
- * v0.8.0 以前寫進 `permissions.ask` 的「PR 開立防護」規則。
- *
- * 政策已反轉：擋 PR **開立**只是在每條任務鏈尾端插一次人工等待，開 PR 可逆也可審查；
- * 真正不可逆的是**合併**（程式碼進共用分支）。因此開 PR 回歸一般流程，防護改押在合併端。
- *
- * 此清單只剩一個用途——讓 `init` / `uninstall` 把既有安裝殘留的這三條**清掉**，
- * 否則升級後的使用者會繼續被無謂地攔問。不再有任何地方寫入它們。
- */
-export const SPEX_LEGACY_PR_ASK_RULES: readonly string[] = [
-  'mcp__azure-devops__create_pull_request',
-  'Bash(az repos pr create:*)',
-  'Bash(gh pr create:*)',
-];
 
 export interface McpServerDefinition {
   id: string;
@@ -197,19 +114,16 @@ export interface McpServerDefinition {
 export interface InstallContext {
   /** 安裝目標的專案根目錄 */
   cwd: string;
-  /**
-   * 安裝版本。資產過濾與沙盒段落剝除已在上游（`commands/init.ts`）完成，
-   * installer 只用它決定 hook 變體與 log 文案。
-   */
-  mode: InstallMode;
   /** 使用者選擇要安裝的 skill 列表 */
   skills: SkillSource[];
   /** 使用者選擇要安裝的 reference 檔案 */
   references: ReferenceSource[];
   /** 要安裝的 rules 檔案（專案規則，skill 執行時讀取） */
   rules: RuleSource[];
-  /** 要安裝的 subagent 定義（challenger / verifier / code-reviewer；僅 Claude Code 有原生落點） */
+  /** 要安裝的 subagent 定義（code-reviewer / verifier） */
   subagents: SubagentSource[];
+  /** 要安裝的編輯期 hook 腳本與其設定檔 */
+  hooks: HookSource[];
   /** 是否覆寫已存在的檔案 */
   force: boolean;
   /** 安裝過程的記錄 callback */
@@ -236,6 +150,8 @@ export interface UninstallContext {
   rules: RuleSource[];
   /** 要移除的 subagent 定義（partial 模式為空陣列，不動共用 agents） */
   subagents: SubagentSource[];
+  /** 要移除的 hook 資產（partial 模式為空陣列，不動共用 hooks） */
+  hooks: HookSource[];
   /** 是否一併移除整個 spex 安裝（含 reference / rules / agent 文件 / temp / MCP） */
   full: boolean;
   /** full 模式下，要從 MCP 設定移除的 spex server id 清單 */
@@ -262,8 +178,10 @@ export interface AgentInstaller {
     skills: string;
     reference: string;
     rules: string;
-    /** subagent 定義落點；無原生 subagent 機制的 agent（Copilot / Codex）不提供 */
+    /** subagent 定義落點；無原生子代理機制的 agent 不提供 */
     agents?: string;
+    /** 編輯期 hook 落點；無 hook 機制的 agent 不提供 */
+    hooks?: string;
     temp?: string;
     mcp: string;
   };
@@ -274,7 +192,7 @@ export interface AgentInstaller {
   /** 寫入 MCP 設定（不會處理敏感 token，token 由 CLI 引導使用者設環境變數） */
   configureMcp(ctx: McpContext): Promise<void>;
 
-  /** 移除已安裝的 spex 資產（skills／reference／rules／agent 文件／MCP 設定） */
+  /** 移除已安裝的 spex 資產（skills／reference／rules／agent 文件／hook／MCP 設定） */
   uninstall(ctx: UninstallContext): Promise<void>;
 }
 

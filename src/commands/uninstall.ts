@@ -5,6 +5,7 @@ import {
   loadReferencesFromAssets,
   loadRulesFromAssets,
   loadSubagentsFromAssets,
+  loadHooksFromAssets,
 } from '../transformers/parse-skill.js';
 import { MCP_SERVERS } from '../mcp/servers.js';
 import { getAssetsDir } from '../utils/paths.js';
@@ -29,6 +30,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<void> {
   const allReferences = await loadReferencesFromAssets(assetsDir);
   const allRules = await loadRulesFromAssets(assetsDir);
   const allSubagents = await loadSubagentsFromAssets(assetsDir);
+  const allHooks = await loadHooksFromAssets(assetsDir);
 
   // 1. 解析 agent（指定優先，否則自動偵測）
   const installer = await resolveInstaller(opts);
@@ -52,7 +54,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<void> {
   // 3. 確認（破壞性操作，預設需確認；-y 跳過）
   if (!opts.yes) {
     const summary = full
-      ? `將從 ${installer.displayName} 移除全部 spex 內容（skills、reference、rules、agent 文件、MCP 設定與 spex-temp）`
+      ? `將從 ${installer.displayName} 移除全部 spex 內容（skills、reference、rules、agent 文件、hooks、MCP 設定與 spex-temp）`
       : `將從 ${installer.displayName} 移除 ${skillsToRemove.length} 個 skill：${skillsToRemove.map((s) => s.name).join(', ')}`;
     log.warn(summary);
     const ans = await prompts({
@@ -75,6 +77,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<void> {
     references: full ? allReferences : [],
     rules: full ? allRules : [],
     subagents: full ? allSubagents : [],
+    hooks: full ? allHooks : [],
     full,
     mcpServerIds: MCP_SERVERS.map((s) => s.id),
     log: log.dim,

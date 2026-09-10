@@ -10,15 +10,35 @@ import {
   safeRemove,
   safeWriteFile,
   type AgentInstaller,
+  type HookSource,
   type InstallContext,
   type McpContext,
   type McpServerDefinition,
   type SkillSource,
+  type SubagentSource,
   type UninstallContext,
 } from './base.js';
 import { getSkillDescription } from '../transformers/parse-skill.js';
 
 const CONFIG_REL = path.join('.codex', 'config.toml');
+const AGENTS_REL = path.join('.codex', 'agents');
+const HOOKS_REL = path.join('.codex', 'hooks');
+const HOOKS_JSON_REL = path.join('.codex', 'hooks.json');
+
+/** 編輯期 hook 掛在 `PostToolUse`：檔案已經寫完才輪到 lint 與格式化。 */
+const HOOK_EVENT = 'PostToolUse';
+const HOOK_MATCHER = 'Edit|Write|MultiEdit';
+
+/**
+ * Codex 無 `$CLAUDE_PROJECT_DIR`，以 git 根目錄定位 hook 腳本。
+ * 以 `bash <path>` 呼叫而非直接執行：腳本透過 safeWriteFile 寫入、不帶執行位元。
+ */
+const hookCommand = (fileName: string): string =>
+  `bash "$(git rev-parse --show-toplevel)/.codex/hooks/${fileName}"`;
+
+/** 只有可執行的 hook 腳本要掛進 hooks.json；`.env` 是它們讀的設定檔。 */
+const executableHooks = (hooks: HookSource[]): HookSource[] =>
+  hooks.filter((h) => !h.isConfig);
 
 /**
  * OpenAI Codex CLI installer。
@@ -28,6 +48,8 @@ const CONFIG_REL = path.join('.codex', 'config.toml');
  *   - 專案指引：根目錄 `AGENTS.md`（啟動時載入；等同 Claude 的 CLAUDE.md / Copilot 的 instructions）
  *   - MCP 設定：`.codex/config.toml` 的 `[mcp_servers.<name>]`（TOML；trusted project 才讀專案層）
  *   - reference / rules：Codex 無自動載入位置，放 `.codex/reference/`、`.codex/rules/`，由 skill 執行時主動讀
+ *   - 子代理：`.codex/agents/<name>.toml`（TOML；`developer_instructions` 帶指示原文）
+ *   - hooks：`.codex/hooks.json` 指定事件與指令，腳本放 `.codex/hooks/`
  *
  * Secret 不落檔：Codex config.toml 不支援 `${VAR}` 內插。stdio 用 `env_vars = ["VAR"]`
  * 從 Codex 本機環境轉發；http 用 `bearer_token_env_var = "VAR"`。實際值仍由使用者設於 shell 環境。
@@ -58,13 +80,15 @@ const codex: AgentInstaller = {
       skills: path.join(base, 'skills'),
       reference: path.join(base, 'reference'),
       rules: path.join(base, 'rules'),
+      agents: path.join(cwd, AGENTS_REL),
+      hooks: path.join(cwd, HOOKS_REL),
       temp: path.join(cwd, 'spex-temp'),
       mcp: path.join(cwd, CONFIG_REL),
     };
   },
 
   async install(ctx: InstallContext): Promise<void> {
-    const { cwd, skills, references, rules, force, log } = ctx;
+    const { cwd, skills, references, rules, subagents, hooks, force, log } = ctx;
     const paths = codex.paths(cwd);
 
     log('\n→ 安裝 Skills 到 .codex/skills/');
@@ -80,13 +104,8 @@ const codex: AgentInstaller = {
     for (const ref of references) {
       const target = path.join(paths.reference, ref.relativePath);
       // reference 內文常自我引用「本安裝自身」的 .claude/ 路徑（例如 adapters/README.md 互相
-      // 指涉），需同步改寫成 .codex/，否則 Codex 讀到的引用路徑會撲空。sandboxes/templates/ 下的
-      // 檔案例外：那些樣板內容描述的是「生成出的 Docker 沙盒」內部結構，沙盒容器一律內建 Claude
-      // Code（與 host 專案採用哪個 agent 無關），其 .claude/ 字面路徑必須保留，不能被改寫。
-      const content = shouldRewriteReferenceContent(ref.relativePath)
-        ? rewriteClaudePaths(ref.content)
-        : ref.content;
-      await safeWriteFile(target, content, { force, log });
+      // 指涉），需同步改寫成 .codex/，否則 Codex 讀到的引用路徑會撲空。
+      await safeWriteFile(target, rewriteClaudePaths(ref.content), { force, log });
     }
 
     log('\n→ 安裝 Rules 到 .codex/rules/');
@@ -103,41 +122,35 @@ const codex: AgentInstaller = {
       await safeWriteFile(target, content, { force, log });
     }
 
-    // Codex 無原生 subagent 註冊機制，章戳鏈的 challenger / verifier 改以 `codex exec`
-    // 開新對話執行——拿不到 harness 生成的章號與事件流，因此本環境**沒有可驗的章**。
-    if (ctx.subagents.length > 0) {
-      log(
-        '\n→ Subagents：Codex 無原生 subagent 機制，未安裝 challenger / verifier / code-reviewer 定義；' +
-          '詰問以 `codex exec` 另起對話執行，且無事件流可供驗章（見 rules/sdd-workflow.md「章的強度分層」）',
-      );
+    log('\n→ 安裝 Subagents 到 .codex/agents/');
+    // code-reviewer 與 verifier 必須是註冊過的子代理才派得出去；
+    // 缺定義 = spex-selfcheck 的整體 review 與獨立驗收無法執行。
+    for (const agent of subagents) {
+      const target = path.join(cwd, AGENTS_REL, subagentTomlName(agent));
+      await safeWriteFile(target, renderSubagentToml(agent), { force, log });
     }
 
-    // 章戳硬閘（PreToolUse hook）是 Claude Code 專屬機制，Codex 無對應落點：
-    // sandbox 版的 relay 驗章接線同樣依賴那條 hook 鏈，這裡一併誠實標註。
-    if (ctx.mode === 'sandbox') {
-      log(
-        '\n→ 安裝版本 sandbox：已寫入沙盒協定與 relay 文件供參考，但 Codex 無 PreToolUse hook 機制，' +
-          '無法安裝章戳硬閘；沙盒的驗章仍須由 relay 執行檔自行把關',
-      );
+    log('\n→ 安裝編輯期 hook 到 .codex/hooks/');
+    for (const hook of hooks) {
+      const target = path.join(cwd, HOOKS_REL, hook.relativePath);
+      // 設定檔裝的是使用者填的專案指令，即使帶 --force 也不覆寫。
+      await safeWriteFile(target, hook.content, {
+        force: hook.isConfig ? false : force,
+        log,
+      });
     }
 
-    // PR 合併控管在 Claude Code 是「permissions.deny + PreToolUse hook」兩層；Codex 兩層都沒有——
-    // sandbox_mode / approval_policy 是粗粒度的整體授權，不具逐指令與參數層判定能力。
-    log(
-      '\n→ 合併防護（誠實標註）：Codex 無 hook、無逐指令 denylist，只有 sandbox_mode + approval_policy 的粗粒度控管。' +
-        '合併 PR（gh pr merge / MCP status=completed / autoComplete）與 git push 到保護分支' +
-        '皆無技術層硬擋，請依 rules/sdd-workflow.md「PR 合併控管」以人工紀律把關',
-    );
+    log(`\n→ 設定編輯期 hook（.codex/hooks.json 的 ${HOOK_EVENT}）`);
+    for (const hook of executableHooks(hooks)) {
+      await ensureSpexHook(cwd, hookCommand(hook.relativePath), log);
+    }
 
     log('\n→ 寫入 AGENTS.md');
-    const agentsPath = path.join(cwd, 'AGENTS.md');
-    await safeWriteFile(agentsPath, buildAgentsDoc(skills), { force, log });
+    const agentsDocPath = path.join(cwd, 'AGENTS.md');
+    await safeWriteFile(agentsDocPath, buildAgentsDoc(skills), { force, log });
 
     log('\n→ 更新 .gitignore（spex-temp/ 改為 on-demand scratch，skill 用時才建立）');
     await ensureSpexTempGitignore(cwd, log);
-
-    log('\n→ 設定沙箱防護（.codex/config.toml 的 sandbox_mode / approval_policy）');
-    await ensureCodexSandbox(cwd, log);
   },
 
   async configureMcp(ctx: McpContext): Promise<void> {
@@ -176,7 +189,7 @@ const codex: AgentInstaller = {
   },
 
   async uninstall(ctx: UninstallContext): Promise<void> {
-    const { cwd, skills, references, rules, full, mcpServerIds, log } = ctx;
+    const { cwd, skills, references, rules, subagents, hooks, full, mcpServerIds, log } = ctx;
     const paths = codex.paths(cwd);
 
     log('\n→ 移除 Skills（.codex/skills/）');
@@ -201,6 +214,29 @@ const codex: AgentInstaller = {
       await removeDirIfEmpty(paths.rules, log);
     }
 
+    if (subagents.length > 0) {
+      log('\n→ 移除 Subagents（.codex/agents/）');
+      for (const agent of subagents) {
+        await safeRemove(path.join(cwd, AGENTS_REL, subagentTomlName(agent)), log);
+      }
+      await removeDirIfEmpty(path.join(cwd, AGENTS_REL), log);
+    }
+
+    if (hooks.length > 0) {
+      log('\n→ 移除編輯期 hook（.codex/hooks/）');
+      for (const hook of hooks) {
+        await safeRemove(path.join(cwd, HOOKS_REL, hook.relativePath), log);
+      }
+      await removeDirIfEmpty(path.join(cwd, HOOKS_REL), log);
+
+      log('\n→ 移除 hook 條目（.codex/hooks.json）');
+      await removeSpexHooks(
+        cwd,
+        executableHooks(hooks).map((h) => hookCommand(h.relativePath)),
+        log,
+      );
+    }
+
     if (!full) return;
 
     log('\n→ 移除 AGENTS.md');
@@ -208,9 +244,6 @@ const codex: AgentInstaller = {
 
     log('\n→ 移除 MCP 設定（.codex/config.toml）');
     await removeTomlMcpServers(paths.mcp, mcpServerIds, log);
-
-    log('\n→ 移除沙箱防護（.codex/config.toml）');
-    await removeCodexSandbox(paths.mcp, log);
 
     log('\n→ 移除 spex-temp/ 並還原 .gitignore');
     await removeSpexTemp(cwd, log);
@@ -297,79 +330,145 @@ function rewriteClaudePaths(body: string): string {
   return body.replace(/\.claude\//g, '.codex/');
 }
 
-/**
- * `sandboxes/templates/` 下的 reference 檔案內容描述的是「生成出的 Docker 沙盒」內部結構——
- * 沙盒容器一律內建 Claude Code（見 `Dockerfile.tmpl` 的 `npm install -g @anthropic-ai/claude-code`），
- * 與安裝 spex 的 host 專案採用哪個 agent 無關，因此這些檔案內文的 `.claude/` 字面路徑
- * 必須保留、不能被改寫成 `.codex/`。其餘 reference 檔案（adapters、spex 範本、sandboxes
- * 協定文件本身等）內文引用的是「本安裝自身」的路徑，需要改寫。
- */
-function shouldRewriteReferenceContent(relativePath: string): boolean {
-  return !relativePath.startsWith('sandboxes/templates/');
+/** 子代理定義的落地檔名：`<name>.toml`。 */
+function subagentTomlName(agent: SubagentSource): string {
+  return `${agent.name}.toml`;
 }
 
-// Codex 的 MCP-only 中層防護：以全域 sandbox 封網路 egress，擋下直打 REST 的繞過管道
-// （curl / wget / az boards / gh api 都需網路，封網路即等效覆蓋 SPEX_BYPASS_COMMANDS）。
-// Codex 無逐指令 denylist、無 PreToolUse hook，粒度較粗——殘餘缺口見 rules 的 MCP-only 章節。
-const CODEX_SANDBOX_BANNER =
-  '# === spex 沙箱防護（MCP-only 中層；封網路 egress 擋直打 REST）===';
-const CODEX_SANDBOX_LINES: readonly string[] = [
-  'sandbox_mode = "workspace-write"',
-  'approval_policy = "untrusted"',
-];
+/**
+ * 把 markdown 子代理定義轉成 Codex 的 agent TOML。
+ * frontmatter 的 name / description 成為 TOML 欄位，body 進 `developer_instructions`；
+ * body 內引用「本安裝自身」的 .claude/ 路徑一併改寫成 .codex/。
+ * 審查與驗收都必須唯讀，故一律宣告 `sandbox_mode = "read-only"`。
+ */
+function renderSubagentToml(agent: SubagentSource): string {
+  const parsed = matter(agent.content);
+  const description =
+    typeof parsed.data.description === 'string' ? parsed.data.description.trim() : '';
+  const instructions = rewriteClaudePaths(parsed.content).trim();
+
+  const lines = [`name = ${tomlStr(agent.name)}`];
+  if (description) lines.push(`description = ${tomlStr(description)}`);
+  lines.push('sandbox_mode = "read-only"');
+  lines.push(`developer_instructions = ${tomlMultiline(instructions)}`);
+  return lines.join('\n') + '\n';
+}
+
+interface HookCommand {
+  type?: string;
+  command?: string;
+  [k: string]: unknown;
+}
+interface HookMatcher {
+  matcher?: string;
+  hooks?: HookCommand[];
+  [k: string]: unknown;
+}
+interface CodexHooksFile {
+  hooks?: Record<string, unknown>;
+  [k: string]: unknown;
+}
 
 /**
- * 在 `.codex/config.toml` 頂部寫入 sandbox_mode / approval_policy（top-level key 必須在任何
- * `[table]` 之前，故 prepend）。冪等且不覆寫使用者：已存在任一鍵即略過（避免 TOML 重複鍵）。
+ * 把一支 hook 合併進 `.codex/hooks.json` 的對應事件陣列。
+ * 不可破壞 merge：保留使用者既有的其他 hook 條目與其 matcher；已存在同一 command 即冪等返回。
  */
-async function ensureCodexSandbox(cwd: string, log: (msg: string) => void): Promise<void> {
-  const configPath = path.join(cwd, CONFIG_REL);
-  const existing = await fs.readFile(configPath, 'utf8').catch(() => '');
+async function ensureSpexHook(
+  cwd: string,
+  command: string,
+  log: (msg: string) => void,
+): Promise<void> {
+  const hooksPath = path.join(cwd, HOOKS_JSON_REL);
 
-  if (/^\s*sandbox_mode\s*=/m.test(existing) || /^\s*approval_policy\s*=/m.test(existing)) {
-    log('  已存在 sandbox_mode / approval_policy，略過（不覆寫使用者設定）');
+  let config: CodexHooksFile = {};
+  const raw = await fs.readFile(hooksPath, 'utf8').catch(() => null);
+  if (raw) {
+    try {
+      config = JSON.parse(raw) as CodexHooksFile;
+    } catch {
+      log(`  警告：現有 ${hooksPath} 不是合法 JSON，將備份後重建`);
+      await fs.copyFile(hooksPath, `${hooksPath}.bak`);
+      config = {};
+    }
+  }
+
+  if (typeof config.hooks !== 'object' || config.hooks === null || Array.isArray(config.hooks)) {
+    config.hooks = {};
+  }
+  const hooks = config.hooks;
+  const entries = Array.isArray(hooks[HOOK_EVENT]) ? (hooks[HOOK_EVENT] as HookMatcher[]) : [];
+
+  if (entries.some((e) => (e?.hooks ?? []).some((h) => h?.command === command))) {
+    log(`  hook 已存在，不需變更: ${command}`);
     return;
   }
 
-  const block = `${CODEX_SANDBOX_BANNER}\n${CODEX_SANDBOX_LINES.join('\n')}\n`;
-  const next = existing.length === 0 ? block : `${block}\n${existing}`;
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, next.endsWith('\n') ? next : next + '\n', 'utf8');
-  log(`  寫入沙箱防護: ${configPath}`);
+  hooks[HOOK_EVENT] = [
+    ...entries,
+    {
+      matcher: HOOK_MATCHER,
+      hooks: [{ type: 'command', command }],
+    },
+  ];
+  await fs.mkdir(path.dirname(hooksPath), { recursive: true });
+  await fs.writeFile(hooksPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  log(`  加入 ${HOOK_EVENT} hook: ${command}`);
+  log(`  寫入: ${hooksPath}`);
 }
 
 /**
- * 自 `.codex/config.toml` 移除 spex 的沙箱防護。
- * 只移除與 banner / CODEX_SANDBOX_LINES 完全相符的行（值被使用者改過即視為非本工具所有，不動）；
- * 收斂殘留空行，整檔清空則刪檔。
+ * 自 `.codex/hooks.json` 移除 spex 的 hook 條目。
+ * 只移除 command 落在所有權清單內的項目；使用者自訂 hook 一律保留。
+ * 清空後的空結構逐層移除，整檔變空物件時直接刪檔。
  */
-async function removeCodexSandbox(configPath: string, log: (msg: string) => void): Promise<void> {
-  const raw = await fs.readFile(configPath, 'utf8').catch(() => null);
-  if (raw === null) return;
+async function removeSpexHooks(
+  cwd: string,
+  owned: readonly string[],
+  log: (msg: string) => void,
+): Promise<void> {
+  const hooksPath = path.join(cwd, HOOKS_JSON_REL);
+  const raw = await fs.readFile(hooksPath, 'utf8').catch(() => null);
+  if (!raw) return;
 
-  const owned = new Set<string>([CODEX_SANDBOX_BANNER, ...CODEX_SANDBOX_LINES]);
-  const lines = raw.split(/\r?\n/);
-  if (!lines.some((l) => owned.has(l.trim()))) return;
-
-  const kept = lines.filter((l) => !owned.has(l.trim()));
-
-  // 收斂連續空行與首尾空行（鏡射 removeTomlMcpServers 的清理）。
-  const collapsed: string[] = [];
-  for (const l of kept) {
-    const blank = l.trim() === '';
-    if (blank && collapsed.length > 0 && collapsed[collapsed.length - 1].trim() === '') continue;
-    collapsed.push(l);
+  let config: CodexHooksFile;
+  try {
+    config = JSON.parse(raw) as CodexHooksFile;
+  } catch {
+    log(`  警告：${hooksPath} 不是合法 JSON，略過 hook 清理`);
+    return;
   }
-  while (collapsed.length && collapsed[collapsed.length - 1].trim() === '') collapsed.pop();
-  while (collapsed.length && collapsed[0].trim() === '') collapsed.shift();
 
-  const next = collapsed.length ? collapsed.join('\n') + '\n' : '';
-  if (next.trim() === '') {
-    await safeRemove(configPath, log);
+  const hooks = config.hooks;
+  if (typeof hooks !== 'object' || hooks === null || !Array.isArray(hooks[HOOK_EVENT])) return;
+
+  const original = hooks[HOOK_EVENT] as HookMatcher[];
+  const kept = original
+    .map((entry) => {
+      const inner = Array.isArray(entry?.hooks) ? entry.hooks : [];
+      const keptInner = inner.filter(
+        (h) => !(typeof h?.command === 'string' && owned.includes(h.command)),
+      );
+      return keptInner.length === inner.length ? entry : { ...entry, hooks: keptInner };
+    })
+    .filter((entry) => (Array.isArray(entry?.hooks) ? entry.hooks.length > 0 : true));
+
+  if (JSON.stringify(kept) === JSON.stringify(original)) return;
+
+  if (kept.length > 0) {
+    hooks[HOOK_EVENT] = kept;
   } else {
-    await fs.writeFile(configPath, next, 'utf8');
-    log(`  已移除 spex 的沙箱防護: ${configPath}`);
+    delete hooks[HOOK_EVENT];
   }
+  if (Object.keys(hooks).length === 0) {
+    delete config.hooks;
+  }
+
+  if (Object.keys(config).length === 0) {
+    await safeRemove(hooksPath, log);
+    return;
+  }
+  await fs.writeFile(hooksPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  log(`  已移除 spex 的 ${HOOK_EVENT} hook: ${hooksPath}`);
 }
 
 /** 把 rule 所屬的 skill 清單格式化成人類可讀字串；無有效值回傳 undefined。 */
@@ -408,9 +507,19 @@ skill 執行時會主動讀取對應規則檔（例如 \`.codex/rules/testing.md
 > Codex 無 Claude Code / Copilot 的自動 scope 機制，規則一律由 skill 執行時主動讀取（runtime-read）。
 > 各規則檔頂部的 HTML 註解標示了該規則「所屬的 skill」供人參考，但不會被 Codex 自動套用。
 
+## 子代理（Subagents）
+
+\`.codex/agents/\` 下的 \`code-reviewer\` 與 \`verifier\` 是唯讀子代理定義：
+Epic 全部 Story 實作就緒後由 \`spex-selfcheck\` 派一次整體 review，機器驗證全綠後再派一次獨立驗收。
+
+## 編輯期 hook
+
+\`.codex/hooks.json\` 掛了兩支 \`PostToolUse\` hook：異動檔案後對「剛異動的那一個檔」跑 lint 與格式化。
+指令寫在 \`.codex/hooks/spex-hooks.env\`，留空即停用該支 hook。
+
 ## 參考資料
 
-SDD 治理（含核心原則、分支生命週期、架構與 File Zones、DoD、程式碼導航策略）見 \`.codex/rules/sdd-workflow.md\`；
+SDD 治理（含核心原則、分支生命週期、Epic 驗收與整合、DoD、程式碼導航策略）見 \`.codex/rules/sdd-workflow.md\`；
 tracker / adapter 文件見 \`.codex/reference/adapters/\`。
 
 ## MCP
@@ -476,6 +585,17 @@ function tomlStr(v: string): string {
 
 function tomlStrArray(arr: string[]): string {
   return `[${arr.map(tomlStr).join(', ')}]`;
+}
+
+/**
+ * TOML multi-line basic string。反斜線是轉義字元須加倍；內容裡的三連引號會提前收尾，
+ * 故轉義其首字元。結尾若剛好是引號也一併轉義，避免與收尾符號連成四個。
+ * 開頭換行由 TOML 規範自動吃掉，正好讓內容從下一行開始。
+ */
+function tomlMultiline(v: string): string {
+  const escaped = v.replace(/\\/g, '\\\\').replace(/"""/g, '\\"""');
+  const tail = escaped.endsWith('"') ? `${escaped.slice(0, -1)}\\"` : escaped;
+  return `"""\n${tail}\n"""`;
 }
 
 registerInstaller(codex);

@@ -10,81 +10,37 @@ import {
   removeSpexTemp,
   safeRemove,
   safeWriteFile,
-  SPEX_BYPASS_COMMANDS,
-  SPEX_LEGACY_PR_ASK_RULES,
-  SPEX_MERGE_DENY_COMMANDS,
   type AgentInstaller,
+  type HookSource,
   type InstallContext,
-  type InstallMode,
   type McpContext,
   type RuleSource,
   type UninstallContext,
 } from './base.js';
 
 const AGENTS_REL = path.join('.claude', 'agents');
+const HOOKS_REL = path.join('.claude', 'hooks');
 const SETTINGS_REL = path.join('.claude', 'settings.local.json');
 const SETTINGS_JSON_REL = path.join('.claude', 'settings.json');
 const MCP_REL = '.mcp.json';
 
 /**
- * 把指令家族翻譯成 Claude Code `permissions.deny` 的規則字串（`Bash(<cmd>:*)`）。
- * deny 在 Claude Code 由 harness 而非模型強制，優先序高於 ask/allow。
+ * 編輯期 hook 掛在 `PostToolUse`：檔案已經寫完才輪到 lint 與格式化。
+ * matcher 對應會產生檔案異動的三個工具。
  */
-const toDenyRule = (cmd: string): string => `Bash(${cmd}:*)`;
+const HOOK_EVENT = 'PostToolUse';
+const HOOK_MATCHER = 'Edit|Write|MultiEdit';
 
 /**
- * 繞過 MCP/TRACKER 的直打 CLI（MCP-only 中層防護）。此衍生清單即該組 deny 的所有權清單。
+ * 以 `bash <path>` 呼叫而非直接執行：hook 腳本透過 safeWriteFile 寫入、不帶執行位元，
+ * 直接執行會因權限失敗而讓 hook 靜默失效。
  */
-const SPEX_BYPASS_DENY_RULES: readonly string[] = SPEX_BYPASS_COMMANDS.map(toDenyRule);
+const hookCommand = (fileName: string): string =>
+  `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/${fileName}"`;
 
-/**
- * 合併 PR 的 CLI（PR 合併控管的字面層）。與 `spex-merge-guard.sh` 互補：
- * deny 擋「無非合併用途」的整條指令，hook 擋「要看引數才知道是不是合併」的那些
- * （`az repos pr update --status completed`、`git push` 到保護分支、MCP 參數層）。
- */
-const SPEX_MERGE_DENY_RULES: readonly string[] = SPEX_MERGE_DENY_COMMANDS.map(toDenyRule);
-
-/**
- * 章戳硬閘 hook（PreToolUse，exit 2）。這是由 harness 而非模型強制的環節：
- * 含章戳宣稱的 tracker 寫入未過驗章一律拒發，且事件流（`~/.claude/projects/`，章的載體）
- * 不得被 Write / Edit / Bash 改寫。
- *
- * 命令帶 `--plane` 參數標明本安裝屬於哪個平面——章戳鏈有兩個平面、兩種章源，
- * hook 只在自己的平面有裁定權：
- * - `--plane agent`：章在本 session 事件流 → 本 hook 跑 challenge-audit 裁定。
- * - `--plane sandbox`：章在 host 影子流、由 relay 執行檔裁定 → 本 hook 不驗 transcript
- *   （驗了必然找不到 challenger 派發事件而產生假 FAIL），改為擋下 host 直發的含章留言。
- */
-// 以 `bash <path>` 呼叫而非直接執行：reference 檔案透過 safeWriteFile 寫入、不帶執行位元，
-// 直接執行會因權限失敗而讓整條硬閘靜默失效。
-const SPEX_STAMP_HOOK_BASE =
-  'bash "$CLAUDE_PROJECT_DIR/.claude/reference/spex/scripts/spex-stamp-guard.sh"';
-const SPEX_STAMP_HOOK_COMMANDS: Record<InstallMode, string> = {
-  agent: `${SPEX_STAMP_HOOK_BASE} --plane agent`,
-  sandbox: `${SPEX_STAMP_HOOK_BASE} --plane sandbox`,
-};
-/**
- * 章戳硬閘的所有權清單（uninstall 與「換模式時就地替換」的判定依據）。
- * 含 v0.7.0 的無參數舊字串，讓升級／切換模式時是**替換同一條目**而非重複附加——
- * 兩支平面不同的硬閘同時掛著會互相矛盾（其中一支必定誤判）。
- */
-const SPEX_STAMP_HOOK_OWNED: readonly string[] = [
-  SPEX_STAMP_HOOK_COMMANDS.agent,
-  SPEX_STAMP_HOOK_COMMANDS.sandbox,
-  SPEX_STAMP_HOOK_BASE,
-];
-const SPEX_STAMP_HOOK_MATCHER = 'Write|Edit|MultiEdit|Bash|mcp__.*';
-
-/**
- * 合併硬閘 hook（PreToolUse，exit 2，**無逃生口**）。與章戳硬閘職責分離、各自獨立執行：
- * 一支守章戳鏈、一支守「PR 不可由 AI 合併」。擋的是 `permissions.deny` 表達不了的那一類——
- * 同一個 MCP 工具既能改 title 也能把 status 設成 completed，工具層粒度分不出來；
- * `git push` 更是只有推到保護分支才算違規，封整條會擋掉 pull-request 的必經步驟。
- */
-const SPEX_MERGE_HOOK_COMMAND =
-  'bash "$CLAUDE_PROJECT_DIR/.claude/reference/spex/scripts/spex-merge-guard.sh"';
-const SPEX_MERGE_HOOK_OWNED: readonly string[] = [SPEX_MERGE_HOOK_COMMAND];
-const SPEX_MERGE_HOOK_MATCHER = 'Bash|mcp__.*';
+/** 只有可執行的 hook 腳本要掛進 settings；`.env` 是它們讀的設定檔。 */
+const executableHooks = (hooks: HookSource[]): HookSource[] =>
+  hooks.filter((h) => !h.isConfig);
 
 interface HookCommand {
   type?: string;
@@ -97,8 +53,7 @@ interface HookMatcher {
   [k: string]: unknown;
 }
 interface ClaudeSettingsFile {
-  permissions?: { ask?: unknown; deny?: unknown; [k: string]: unknown };
-  hooks?: { PreToolUse?: unknown; [k: string]: unknown };
+  hooks?: Record<string, unknown>;
   [k: string]: unknown;
 }
 
@@ -131,13 +86,14 @@ const claudeCode: AgentInstaller = {
       reference: path.join(base, 'reference'),
       rules: path.join(base, 'rules'),
       agents: path.join(cwd, AGENTS_REL),
+      hooks: path.join(cwd, HOOKS_REL),
       temp: path.join(cwd, 'spex-temp'),
       mcp: path.join(cwd, MCP_REL),
     };
   },
 
   async install(ctx: InstallContext): Promise<void> {
-    const { cwd, mode, skills, references, rules, subagents, force, log } = ctx;
+    const { cwd, skills, references, rules, subagents, hooks, force, log } = ctx;
     const paths = claudeCode.paths(cwd);
 
     log('\n→ 安裝 Skills 到 .claude/skills/');
@@ -162,50 +118,30 @@ const claudeCode: AgentInstaller = {
     }
 
     log('\n→ 安裝 Subagents 到 .claude/agents/');
-    // challenger / verifier（章戳鏈）與 code-reviewer（G.2.5 品質審查）必須是註冊過的 subagent_type 才派得出去；
-    // 缺定義 = spex-challenge / spex-selfcheck 的獨立詰問與驗收、spex-implement 的品質審查皆無法執行。
+    // code-reviewer 與 verifier 必須是註冊過的 subagent_type 才派得出去；
+    // 缺定義 = spex-selfcheck 的整體 review 與獨立驗收無法執行。
     for (const agent of subagents) {
       const target = path.join(cwd, AGENTS_REL, agent.relativePath);
       await safeWriteFile(target, agent.content, { force, log });
     }
 
+    log('\n→ 安裝編輯期 hook 到 .claude/hooks/');
+    for (const hook of hooks) {
+      const target = path.join(cwd, HOOKS_REL, hook.relativePath);
+      // 設定檔裝的是使用者填的專案指令，即使帶 --force 也不覆寫。
+      await safeWriteFile(target, hook.content, {
+        force: hook.isConfig ? false : force,
+        log,
+      });
+    }
+
     log('\n→ 更新 .gitignore（spex-temp/ 改為 on-demand scratch，skill 用時才建立）');
     await ensureSpexTempGitignore(cwd, log);
 
-    // v0.9.0 政策反轉：開 PR 回歸一般流程，舊版寫進 permissions.ask 的三條規則要在升級時清掉，
-    // 否則使用者會繼續被無謂地攔問。這是「升級即遷移」，不是 uninstall 專屬行為。
-    log('\n→ 清理舊版 PR 開立防護（.claude/settings.json 的 permissions.ask）');
-    await removeLegacyPrAskPermissions(cwd, log);
-
-    log('\n→ 設定繞過防護（.claude/settings.json 的 permissions.deny）');
-    await ensureDenyRules(cwd, SPEX_BYPASS_DENY_RULES, '繞過防護', log);
-
-    log('\n→ 設定合併防護（.claude/settings.json 的 permissions.deny）');
-    await ensureDenyRules(cwd, SPEX_MERGE_DENY_RULES, '合併防護', log);
-
-    log(`\n→ 設定章戳硬閘（.claude/settings.json 的 PreToolUse hook，--plane ${mode}）`);
-    await ensureSpexHook(
-      cwd,
-      {
-        command: SPEX_STAMP_HOOK_COMMANDS[mode],
-        owned: SPEX_STAMP_HOOK_OWNED,
-        matcher: SPEX_STAMP_HOOK_MATCHER,
-        label: '章戳硬閘',
-      },
-      log,
-    );
-
-    log('\n→ 設定合併硬閘（.claude/settings.json 的 PreToolUse hook）');
-    await ensureSpexHook(
-      cwd,
-      {
-        command: SPEX_MERGE_HOOK_COMMAND,
-        owned: SPEX_MERGE_HOOK_OWNED,
-        matcher: SPEX_MERGE_HOOK_MATCHER,
-        label: '合併硬閘',
-      },
-      log,
-    );
+    log(`\n→ 設定編輯期 hook（.claude/settings.json 的 ${HOOK_EVENT}）`);
+    for (const hook of executableHooks(hooks)) {
+      await ensureSpexHook(cwd, hookCommand(hook.relativePath), log);
+    }
   },
 
   async configureMcp(ctx: McpContext): Promise<void> {
@@ -261,7 +197,7 @@ const claudeCode: AgentInstaller = {
   },
 
   async uninstall(ctx: UninstallContext): Promise<void> {
-    const { cwd, skills, references, rules, subagents, full, mcpServerIds, log } = ctx;
+    const { cwd, skills, references, rules, subagents, hooks, full, mcpServerIds, log } = ctx;
     const paths = claudeCode.paths(cwd);
 
     log('\n→ 移除 Skills（.claude/skills/）');
@@ -295,6 +231,21 @@ const claudeCode: AgentInstaller = {
       await removeDirIfEmpty(path.join(cwd, AGENTS_REL), log);
     }
 
+    if (hooks.length > 0) {
+      log('\n→ 移除編輯期 hook（.claude/hooks/）');
+      for (const hook of hooks) {
+        await safeRemove(path.join(cwd, HOOKS_REL, hook.relativePath), log);
+      }
+      await removeDirIfEmpty(path.join(cwd, HOOKS_REL), log);
+
+      log('\n→ 移除 hook 條目（.claude/settings.json）');
+      await removeSpexHooks(
+        cwd,
+        executableHooks(hooks).map((h) => hookCommand(h.relativePath)),
+        log,
+      );
+    }
+
     if (!full) return;
 
     log('\n→ 移除 MCP 設定（.mcp.json）');
@@ -303,139 +254,23 @@ const claudeCode: AgentInstaller = {
     log('\n→ 移除 spex-temp/ 並還原 .gitignore');
     await removeSpexTemp(cwd, log);
 
-    log('\n→ 移除舊版 PR 開立防護（.claude/settings.json）');
-    await removeLegacyPrAskPermissions(cwd, log);
-
-    log('\n→ 移除繞過防護與合併防護（.claude/settings.json）');
-    await removeDenyRules(cwd, [...SPEX_BYPASS_DENY_RULES, ...SPEX_MERGE_DENY_RULES], log);
-
-    log('\n→ 移除章戳硬閘與合併硬閘 hook（.claude/settings.json）');
-    await removeSpexHook(cwd, [...SPEX_STAMP_HOOK_OWNED, ...SPEX_MERGE_HOOK_OWNED], log);
-
     // 若 .claude/ 已被清空（沒有使用者其他內容）則一併移除
     await removeDirIfEmpty(path.join(cwd, '.claude'), log);
   },
 };
 
 /**
- * 自 `.claude/settings.json` 移除**舊版**的 PR 開立防護規則（v0.8.0 以前寫入的三條 ask）。
- * 政策已反轉：開 PR 回歸一般流程，這三條不再寫入，只在 install（升級遷移）與 uninstall 時清除。
- * 只移除與 SPEX_LEGACY_PR_ASK_RULES 完全相符的字串；使用者自訂規則與其他鍵保留。
- * 清空後的空結構逐層移除，整檔變空物件時直接刪檔。
+ * 把一支 hook 合併進專案 `.claude/settings.json` 的對應事件陣列。
+ * 不可破壞 merge：保留使用者既有的其他 hook 條目與其 matcher。
+ * 已存在同一 command 即冪等返回；否則 append 一個新條目。
+ * 寫進專案層 settings.json（而非 settings.local.json）讓 hook 可進版控、整個團隊共用。
  */
-async function removeLegacyPrAskPermissions(cwd: string, log: (msg: string) => void): Promise<void> {
-  const settingsPath = path.join(cwd, SETTINGS_JSON_REL);
-  const raw = await fs.readFile(settingsPath, 'utf8').catch(() => null);
-  if (!raw) return;
-
-  let settings: ClaudeSettingsFile;
-  try {
-    settings = JSON.parse(raw) as ClaudeSettingsFile;
-  } catch {
-    log(`  警告：${settingsPath} 不是合法 JSON，略過舊版 PR 防護規則清理`);
-    return;
-  }
-
-  const permissions = settings.permissions;
-  if (typeof permissions !== 'object' || permissions === null || !Array.isArray(permissions.ask)) return;
-
-  const original = permissions.ask as unknown[];
-  const kept = original.filter(
-    (rule) => !(typeof rule === 'string' && SPEX_LEGACY_PR_ASK_RULES.includes(rule)),
-  );
-  if (kept.length === original.length) return;
-
-  if (kept.length > 0) {
-    permissions.ask = kept;
-  } else {
-    delete permissions.ask;
-  }
-  if (Object.keys(permissions).length === 0) {
-    delete settings.permissions;
-  }
-
-  if (Object.keys(settings).length === 0) {
-    await safeRemove(settingsPath, log);
-    return;
-  }
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  log(`  已移除舊版 PR 開立防護規則（開 PR 已回歸一般流程）: ${settingsPath}`);
-}
-
-/**
- * 把一組規則合併進專案 `.claude/settings.json` 的 permissions.deny。
- * 不可破壞 merge：保留檔內既有設定與使用者自訂規則；已齊全時不寫檔（冪等）；壞 JSON 先備份 .bak。
- * 寫入專案層 settings.json（而非 settings.local.json）讓防護可進版控、約束整個團隊。
- *
- * 由繞過防護與合併防護兩組清單各呼叫一次——它們同住 `permissions.deny` 這個陣列，
- * 但所有權清單各自獨立，uninstall 時只移除自己那組。
- */
-async function ensureDenyRules(
-  cwd: string,
-  rules: readonly string[],
-  label: string,
-  log: (msg: string) => void,
-): Promise<void> {
-  const settingsPath = path.join(cwd, SETTINGS_JSON_REL);
-
-  let settings: ClaudeSettingsFile = {};
-  const raw = await fs.readFile(settingsPath, 'utf8').catch(() => null);
-  if (raw) {
-    try {
-      settings = JSON.parse(raw) as ClaudeSettingsFile;
-    } catch {
-      log(`  警告：現有 ${settingsPath} 不是合法 JSON，將備份後重建`);
-      await fs.copyFile(settingsPath, `${settingsPath}.bak`);
-      settings = {};
-    }
-  }
-
-  if (typeof settings.permissions !== 'object' || settings.permissions === null || Array.isArray(settings.permissions)) {
-    settings.permissions = {};
-  }
-  const permissions = settings.permissions;
-  const deny = Array.isArray(permissions.deny) ? (permissions.deny as unknown[]) : [];
-  const missing = rules.filter((rule) => !deny.includes(rule));
-
-  if (missing.length === 0 && Array.isArray(permissions.deny)) {
-    log(`  ${label}規則已齊全（permissions.deny），不需變更`);
-    return;
-  }
-
-  permissions.deny = [...deny, ...missing];
-  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  for (const rule of missing) log(`  加入 deny 規則: ${rule}`);
-  log(`  寫入: ${settingsPath}`);
-}
-
-/**
- * 把章戳硬閘 hook 合併進專案 `.claude/settings.json` 的 `hooks.PreToolUse`。
- * 不可破壞 merge：保留使用者既有的其他 hook 條目。三態：
- *   1. 已存在**目標平面**的 command → 不寫檔（冪等）。
- *   2. 已存在其他 owned 變體（換模式、或從 v0.7.0 無參數字串升級）→ **就地替換** command，
- *      不新增條目——兩支平面不同的硬閘同時掛著必有一支誤判。
- *   3. 都沒有 → append 新條目。
- * 只認 command 字串做所有權判定，matcher 被使用者調整過也不覆寫（那是有意識的調整）。
- */
-interface SpexHookSpec {
-  /** 本次要落地的 command 字串 */
-  command: string;
-  /** 所有權清單：這些 command 都算「本 hook 的變體」，出現時就地替換而非新增條目 */
-  owned: readonly string[];
-  /** 新增條目時使用的 matcher；既有條目的 matcher 不覆寫 */
-  matcher: string;
-  /** log 用的中文名（章戳硬閘 / 合併硬閘） */
-  label: string;
-}
-
 async function ensureSpexHook(
   cwd: string,
-  spec: SpexHookSpec,
+  command: string,
   log: (msg: string) => void,
 ): Promise<void> {
   const settingsPath = path.join(cwd, SETTINGS_JSON_REL);
-  const desired = spec.command;
 
   let settings: ClaudeSettingsFile = {};
   const raw = await fs.readFile(settingsPath, 'utf8').catch(() => null);
@@ -453,53 +288,32 @@ async function ensureSpexHook(
     settings.hooks = {};
   }
   const hooks = settings.hooks;
-  const preToolUse = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as HookMatcher[]) : [];
+  const entries = Array.isArray(hooks[HOOK_EVENT]) ? (hooks[HOOK_EVENT] as HookMatcher[]) : [];
 
-  const owned = (cmd: unknown): cmd is string =>
-    typeof cmd === 'string' && spec.owned.includes(cmd);
-
-  if (preToolUse.some((e) => (e?.hooks ?? []).some((h) => h?.command === desired))) {
-    log(`  ${spec.label} hook 已存在，不需變更`);
+  if (entries.some((e) => (e?.hooks ?? []).some((h) => h?.command === command))) {
+    log(`  hook 已存在，不需變更: ${command}`);
     return;
   }
 
-  const hasOther = preToolUse.some((e) => (e?.hooks ?? []).some((h) => owned(h?.command)));
-  if (hasOther) {
-    // 換變體（例如章戳硬閘換平面、或從舊版無參數字串升級）：就地改 command，
-    // 保留使用者調整過的 matcher 與同條目內其他 hook；絕不新增第二條互相矛盾的條目。
-    hooks.PreToolUse = preToolUse.map((entry) => {
-      const inner = Array.isArray(entry?.hooks) ? entry.hooks : [];
-      if (!inner.some((h) => owned(h?.command))) return entry;
-      return {
-        ...entry,
-        hooks: inner.map((h) => (owned(h?.command) ? { ...h, command: desired } : h)),
-      };
-    });
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-    log(`  更新 ${spec.label} hook: ${desired}`);
-    log(`  寫入: ${settingsPath}`);
-    return;
-  }
-
-  hooks.PreToolUse = [
-    ...preToolUse,
+  hooks[HOOK_EVENT] = [
+    ...entries,
     {
-      matcher: spec.matcher,
-      hooks: [{ type: 'command', command: desired }],
+      matcher: HOOK_MATCHER,
+      hooks: [{ type: 'command', command }],
     },
   ];
   await fs.mkdir(path.dirname(settingsPath), { recursive: true });
   await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  log(`  加入 ${spec.label} PreToolUse hook: ${desired}`);
+  log(`  加入 ${HOOK_EVENT} hook: ${command}`);
   log(`  寫入: ${settingsPath}`);
 }
 
 /**
- * 自 `.claude/settings.json` 移除 spex 的 PreToolUse hook。
- * 只移除 command 落在 `owned` 所有權清單內的條目（含各種歷史變體）；
- * 使用者自訂 hook 一律保留。清空後的空結構逐層移除，整檔變空物件時直接刪檔。
+ * 自 `.claude/settings.json` 移除 spex 的 hook 條目。
+ * 只移除 command 落在所有權清單內的項目；使用者自訂 hook 一律保留。
+ * 清空後的空結構逐層移除，整檔變空物件時直接刪檔。
  */
-async function removeSpexHook(
+async function removeSpexHooks(
   cwd: string,
   owned: readonly string[],
   log: (msg: string) => void,
@@ -517,9 +331,9 @@ async function removeSpexHook(
   }
 
   const hooks = settings.hooks;
-  if (typeof hooks !== 'object' || hooks === null || !Array.isArray(hooks.PreToolUse)) return;
+  if (typeof hooks !== 'object' || hooks === null || !Array.isArray(hooks[HOOK_EVENT])) return;
 
-  const original = hooks.PreToolUse as HookMatcher[];
+  const original = hooks[HOOK_EVENT] as HookMatcher[];
   const kept = original
     .map((entry) => {
       const inner = Array.isArray(entry?.hooks) ? entry.hooks : [];
@@ -534,9 +348,9 @@ async function removeSpexHook(
   if (JSON.stringify(kept) === JSON.stringify(original)) return;
 
   if (kept.length > 0) {
-    hooks.PreToolUse = kept;
+    hooks[HOOK_EVENT] = kept;
   } else {
-    delete hooks.PreToolUse;
+    delete hooks[HOOK_EVENT];
   }
   if (Object.keys(hooks).length === 0) {
     delete settings.hooks;
@@ -547,53 +361,7 @@ async function removeSpexHook(
     return;
   }
   await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  log(`  已移除 spex 的 PreToolUse hook: ${settingsPath}`);
-}
-
-/**
- * 自 `.claude/settings.json` 移除 spex 寫入的 deny 規則（繞過防護 + 合併防護）。
- * 只移除與傳入清單完全相符的字串；使用者自訂規則與其他鍵保留。
- * 清空後的空結構逐層移除，整檔變空物件時直接刪檔。
- */
-async function removeDenyRules(
-  cwd: string,
-  rules: readonly string[],
-  log: (msg: string) => void,
-): Promise<void> {
-  const settingsPath = path.join(cwd, SETTINGS_JSON_REL);
-  const raw = await fs.readFile(settingsPath, 'utf8').catch(() => null);
-  if (!raw) return;
-
-  let settings: ClaudeSettingsFile;
-  try {
-    settings = JSON.parse(raw) as ClaudeSettingsFile;
-  } catch {
-    log(`  警告：${settingsPath} 不是合法 JSON，略過 deny 規則清理`);
-    return;
-  }
-
-  const permissions = settings.permissions;
-  if (typeof permissions !== 'object' || permissions === null || !Array.isArray(permissions.deny)) return;
-
-  const original = permissions.deny as unknown[];
-  const kept = original.filter((rule) => !(typeof rule === 'string' && rules.includes(rule)));
-  if (kept.length === original.length) return;
-
-  if (kept.length > 0) {
-    permissions.deny = kept;
-  } else {
-    delete permissions.deny;
-  }
-  if (Object.keys(permissions).length === 0) {
-    delete settings.permissions;
-  }
-
-  if (Object.keys(settings).length === 0) {
-    await safeRemove(settingsPath, log);
-    return;
-  }
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  log(`  已移除 spex 的 deny 規則: ${settingsPath}`);
+  log(`  已移除 spex 的 ${HOOK_EVENT} hook: ${settingsPath}`);
 }
 
 /**
