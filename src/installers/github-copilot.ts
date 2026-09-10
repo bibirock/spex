@@ -8,8 +8,6 @@ import {
   removeSpexTemp,
   safeRemove,
   safeWriteFile,
-  SPEX_BYPASS_COMMANDS,
-  SPEX_MERGE_DENY_COMMANDS,
   type AgentInstaller,
   type InstallContext,
   type McpContext,
@@ -17,8 +15,6 @@ import {
 } from './base.js';
 
 /** VS Code agent 終端的繞過防護設定鍵（值為 { pattern: true } 物件）。 */
-const COPILOT_DENYLIST_KEY = 'github.copilot.chat.agent.terminal.denyList';
-const VSCODE_SETTINGS_REL = path.join('.vscode', 'settings.json');
 import {
   toCopilotPrompt,
   toCopilotInstruction,
@@ -100,38 +96,23 @@ const githubCopilot: AgentInstaller = {
       await safeWriteFile(target, instruction, { force, log });
     }
 
-    // Copilot 無原生 subagent 機制（`.claude/agents/` 的對應物），章戳鏈的 challenger /
-    // verifier 只能由使用者開新 Chat 手動扮演——無法取得 harness 生成的章號與事件流，
-    // 因此本環境**沒有可驗的章**。誠實標註，不假裝安裝了等價防護。
+    // Copilot 無原生子代理機制，也無 hook 落點。誠實標註，不假裝安裝了等價能力。
     if (ctx.subagents.length > 0) {
       log(
-        '\n→ Subagents：Copilot 無原生 subagent 機制，未安裝 challenger / verifier / code-reviewer 定義；' +
-          '詰問需開新 Chat 手動執行，且無事件流可供驗章（見 rules/sdd-workflow.md「章的強度分層」）',
+        '\n→ Subagents：Copilot 無原生子代理機制，未安裝 code-reviewer / verifier 定義；' +
+          'spex-selfcheck 的整體 review 與獨立驗收需開新 Chat 依該定義手動執行',
       );
     }
 
-    // 章戳硬閘（PreToolUse hook）是 Claude Code 專屬機制，Copilot 無對應落點：
-    // sandbox 版的 relay 驗章接線同樣依賴那條 hook 鏈，這裡一併誠實標註。
-    if (ctx.mode === 'sandbox') {
+    if (ctx.hooks.length > 0) {
       log(
-        '\n→ 安裝版本 sandbox：已寫入沙盒協定與 relay 文件供參考，但 Copilot 無 PreToolUse hook 機制，' +
-          '無法安裝章戳硬閘；沙盒的驗章仍須由 relay 執行檔自行把關',
+        '\n→ 編輯期 hook：Copilot 無 hook 機制，未安裝 lint / format hook；' +
+          '請依 rules/commands.md 的驗證指令束自行執行',
       );
     }
 
     log('\n→ 更新 .gitignore（spex-temp/ 改為 on-demand scratch，skill 用時才建立）');
     await ensureSpexTempGitignore(cwd, log);
-
-    log('\n→ 設定繞過防護與合併防護（.vscode/settings.json 的 terminal denyList）');
-    await ensureCopilotDenyList(cwd, log);
-
-    // PR 合併控管在 Claude Code 是「denyList + PreToolUse hook」兩層；Copilot 只有前者。
-    // 擋不到的兩類必須誠實講出來，否則使用者會以為合併已被完整封住。
-    log(
-      '\n→ 合併防護（誠實標註）：Copilot 無 hook 機制，只有終端指令的字面封鎖。' +
-        '擋不到 MCP 參數層的合併（update_pull_request 帶 status=completed / autoComplete），' +
-        '也擋不到 git push 到保護分支——這兩類請依 rules/sdd-workflow.md「PR 合併控管」以人工紀律把關',
-    );
   },
 
   async configureMcp(ctx: McpContext): Promise<void> {
@@ -230,10 +211,6 @@ const githubCopilot: AgentInstaller = {
     await removeJsonMcpServers(paths.mcp, 'servers', mcpServerIds, log);
     await removeDirIfEmpty(path.join(cwd, '.vscode'), log);
 
-    log('\n→ 移除繞過防護與合併防護（.vscode/settings.json 的 terminal denyList）');
-    await removeCopilotDenyList(cwd, log);
-    await removeDirIfEmpty(path.join(cwd, '.vscode'), log);
-
     log('\n→ 移除 spex-temp/ 並還原 .gitignore');
     await removeSpexTemp(cwd, log);
 
@@ -246,110 +223,6 @@ const githubCopilot: AgentInstaller = {
 /** 把 Claude Code 風格的 ${VAR} 佔位轉成 VS Code MCP 的 ${env:VAR} */
 function toVsCodePlaceholder(value: string): string {
   return value.replace(/\$\{([A-Z0-9_]+)\}/g, '${env:$1}');
-}
-
-/**
- * 把繞過指令家族翻成 VS Code denyList 的鍵：
- * 單字指令（curl / wget）直接用指令名；含子指令的多字（az boards / gh api）用 regex 錨定開頭，
- * 以匹配其所有子指令變體。
- */
-function toCopilotDenyKey(cmd: string): string {
-  return cmd.includes(' ') ? `/^${cmd.replace(/\s+/g, '\\s+')}\\b/` : cmd;
-}
-
-/**
- * spex 寫入 denyList 的鍵清單（即 uninstall 的所有權清單）：繞過指令家族 + 合併 PR 指令家族。
- * 注意 Copilot 只有這層**字面**封鎖——沒有 hook，因此擋不到 MCP 參數層的合併
- * （`update_pull_request` 帶 `status: completed`）與 `git push` 到保護分支。install 時誠實標註。
- */
-const COPILOT_DENY_KEYS: readonly string[] = [
-  ...SPEX_BYPASS_COMMANDS,
-  ...SPEX_MERGE_DENY_COMMANDS,
-].map(toCopilotDenyKey);
-
-/**
- * 把繞過防護鍵合併進 `.vscode/settings.json` 的 denyList 物件（值為 true = 拒絕）。
- * 不可破壞 merge：保留檔內既有設定與使用者自訂的 denyList 條目；已齊全時不寫檔（冪等）；
- * 壞 JSON 先備份 .bak 後重建。Copilot 的繞過防護僅 VS Code agent 終端生效（殘餘缺口見 rules）。
- */
-async function ensureCopilotDenyList(cwd: string, log: (msg: string) => void): Promise<void> {
-  const settingsPath = path.join(cwd, VSCODE_SETTINGS_REL);
-
-  let settings: Record<string, unknown> = {};
-  const raw = await fs.readFile(settingsPath, 'utf8').catch(() => null);
-  if (raw) {
-    try {
-      settings = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      log(`  警告：現有 ${settingsPath} 不是合法 JSON，將備份後重建`);
-      await fs.copyFile(settingsPath, `${settingsPath}.bak`);
-      settings = {};
-    }
-  }
-
-  const existing = settings[COPILOT_DENYLIST_KEY];
-  const denyList: Record<string, unknown> =
-    typeof existing === 'object' && existing !== null && !Array.isArray(existing)
-      ? (existing as Record<string, unknown>)
-      : {};
-  const missing = COPILOT_DENY_KEYS.filter((key) => denyList[key] !== true);
-
-  if (missing.length === 0 && typeof existing === 'object' && existing !== null) {
-    log('  繞過防護與合併防護已齊全（denyList），不需變更');
-    return;
-  }
-
-  for (const key of missing) denyList[key] = true;
-  settings[COPILOT_DENYLIST_KEY] = denyList;
-  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  for (const key of missing) log(`  加入 denyList: ${key}`);
-  log(`  寫入: ${settingsPath}`);
-}
-
-/**
- * 自 `.vscode/settings.json` 移除 spex 的繞過防護鍵。
- * 只移除 COPILOT_DENY_KEYS 且值仍為 true 的條目；使用者自訂條目與其他設定保留。
- * 清空後的空結構逐層移除，整檔變空物件時直接刪檔。
- */
-async function removeCopilotDenyList(cwd: string, log: (msg: string) => void): Promise<void> {
-  const settingsPath = path.join(cwd, VSCODE_SETTINGS_REL);
-  const raw = await fs.readFile(settingsPath, 'utf8').catch(() => null);
-  if (!raw) return;
-
-  let settings: Record<string, unknown>;
-  try {
-    settings = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    log(`  警告：${settingsPath} 不是合法 JSON，略過繞過防護清理`);
-    return;
-  }
-
-  const existing = settings[COPILOT_DENYLIST_KEY];
-  if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) return;
-  const denyList = existing as Record<string, unknown>;
-
-  let removed = 0;
-  for (const key of COPILOT_DENY_KEYS) {
-    if (denyList[key] === true) {
-      delete denyList[key];
-      removed++;
-    }
-  }
-  if (removed === 0) return;
-
-  if (Object.keys(denyList).length === 0) {
-    delete settings[COPILOT_DENYLIST_KEY];
-  } else {
-    settings[COPILOT_DENYLIST_KEY] = denyList;
-  }
-
-  if (Object.keys(settings).length === 0) {
-    await safeRemove(settingsPath, log);
-    return;
-  }
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-  log(`  已移除 spex 的繞過防護: ${settingsPath}`);
 }
 
 registerInstaller(githubCopilot);

@@ -4,7 +4,8 @@ skills:
   - spex-task
   - spex-implement
   - spex-selfcheck
-  - spex-pull-request
+  - spex-schedule
+  - spex-fixbug
 ---
 
 # Testing 規則
@@ -56,18 +57,31 @@ tests/
 ## E2E 撰寫慣例
 
 - **共用資料庫的 e2e 必須序列化**：多個 e2e suite 打同一個 DB 時，並行 worker 會互刪資料造成偶發紅燈（A suite 的清表掃掉 B suite 的 fixtures）。處理方式：把 runner 的並行度設為 1（各家設定名不同，查你所用 runner 的文件），或改用 per-suite schema / transaction 隔離。
+- 使用同一個固定 port／同一測試拓撲的命令必須串行執行；讀取建置產物的檢查必須等 producer build 完成，避免把半成品或互相關閉 server 誤判成產品缺陷。
 - `## TODO: [補充專案特有的 E2E 慣例，例如匯入路徑限制、導航等待策略、本地/CI dev server 復用策略]`
 - 建議流程：先用 UI 驗證工具探索真實流程與 DOM → 再依 E2E 框架慣例產出測試。
 
-## UI Verification（UI / 佈局 / 拖放 / 視覺反饋類任務 commit 前必走）
+## 執行順序與重驗範圍
 
-與「程式化斷言 PASS」並列、缺一不可。
+1. 開發期間依 Story AC 跑相關單元、資料庫、元件與 E2E 測試；UI 直接驗使用者可見結果、互動狀態、API 邊界與 console。
+2. Epic 所有 Story 實作完成、整體 code review 的實質缺口處理後，才執行 `commands.md` 的完整驗證指令束與全部本機測試拓撲。
+3. 機器驗證全綠後才進一次獨立 verifier；verifier 閱讀原始結果，不自行重跑完整 suite。
+4. 失敗先定位及修正，只重驗受修正影響的 suite／拓撲。維持每個必跑範圍都有適用目前內容的成功證據；影響不明時才擴大回歸。
 
-| 步驟 | 做法 |
-|---|---|
-| 啟動 dev server | `## TODO: [檢查/啟動指令，如 lsof -i :<port> 檢查；無則啟動並等待就緒訊息]` |
-| 真實渲染走流程 | UI 驗證工具導覽 → 逐步操作互動元素 |
-| 逐項截圖比對 AC | 每條 AC 對應 1 張截圖，用 Read 看圖確認視覺與 AC 文字一致 |
-| console 監聽 | 瀏覽器 console 不可有新 error / warn |
+新 commit 本身不使證據失效。文件／流程紀錄改動沿用產品結果；runtime、測試、fixture、migration、建置或拓撲改動則核對其影響。
 
-任一項不符 → 退回 Refactor 修真實渲染，**不可**用單元 / 整合 / E2E spec PASS 替代。
+## UI Verification
+
+- 涉及檔案處理或多階段流程的成功路徑，使用實體 fixture 由自動化工具走完整條使用者鏈到最終可觀察結果。格式／容量等拒絕路徑不要求不存在的後續產物。
+- 視覺 AC 的截圖須實際開啟檢視；保留 console error／warning assertions。非視覺條件不用機械式一條 AC 一張圖。
+- 本機替身或 mock 不得宣稱為真實外部帳戶登入；外部真實帳戶互動的人工 gate 只涵蓋不可自動化的該段，不擴大豁免正式表面契約。
+- 可用 CLI 或瀏覽器自動化工具探索與執行 UI；手動瀏覽不能取代規格要求的自動化驗證。不要只因缺少互動式工具而停止可用 CLI 完成的驗證。
+
+## 證據與 artifact 保存
+
+每次執行先選定獨立 run 目錄，例如 `## TODO: [本專案的證據保存目錄，如 spex-temp/<epic-id>/<run-id>/]`。保存：受測 commit 與未提交差異範圍、完整命令與 cwd、exit code、測試總數／失敗／略過數、原始 log、測試報告與相關截圖。
+
+- 使用工具原始輸出，不以手填數量代替原報告。不能把 zero tests、只列出測試或環境錯誤當 PASS。
+- 在下一個 focused 測試、clean 或 build 前，先把已完成的報告複製到該 run 目錄；可配置獨立 reporter 路徑時直接配置，避免互相覆蓋。
+- 原始證據保留至 Epic 驗收及所要求的整合交付完成。tracker 永久保留精簡 AC→測試與結果對照、commit、報告位置、review／verifier 原文及整合結果。
+- 測試暫存物與建置產物不 commit；保存必要證據後只清理本次已確認可還原的產物，不使用全面 git clean。

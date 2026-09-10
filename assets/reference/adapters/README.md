@@ -26,15 +26,13 @@ Skill 呼叫 `TRACKER.*` 時**不可載入整份 adapter 文件**，必須只讀
 | `TRACKER.getParentImages`   | [`#trackergetparentimagesid`](#trackergetparentimagesid)                                             | `## \`TRACKER.getParentImages(id)\``                        |
 | `TRACKER.linkDependency`    | [`#trackerlinkdependencypredecessorid-successorid`](#trackerlinkdependencypredecessorid-successorid) | `## \`TRACKER.linkDependency(predecessorId, successorId)\`` |
 | `TRACKER.getDependencies`   | [`#trackergetdependenciesparentid`](#trackergetdependenciesparentid)                                 | `## \`TRACKER.getDependencies(parentId)\``                  |
-| `TRACKER.createPullRequest` | [`#trackercreatepullrequestparams`](#trackercreatepullrequestparams)                                 | `## \`TRACKER.createPullRequest(params)\``                  |
-| `TRACKER.updatePullRequest` | [`#trackerupdatepullrequestparams`](#trackerupdatepullrequestparams)                                 | `## \`TRACKER.updatePullRequest(params)\``                  |
 
 **Agent 讀取 SOP**：
 
-1. `grep -n "^## .TRACKER\.<op>" <adapter-file>.md` → 取得起始行號
-2. `grep -n "^## " <adapter-file>.md` → 從上一步行號往下找最近的 `^## ` 取得結束行號
-3. `Read(file, offset=<起始>, limit=<結束-起始>)` 只讀該段
-4. 跨章節依賴（例：`createPullRequest` 需參考 PR 描述範本）→ 各自重跑上述步驟
+1. `rg -n "^## .TRACKER\.<op>" <adapter-file>.md` → 取得起始行號
+2. `rg -n "^## " <adapter-file>.md` → 從上一步行號往下找最近的 `^## ` 取得結束行號
+3. 以 `sed -n '<起始>,<結束>p' <adapter-file>.md` 只讀該段
+4. 跨章節依賴（例：`createChildTask` 需參考欄位格式）→ 各自重跑上述步驟
 
 **例外**：首次接觸 adapter 可一次讀 `## 實作對應總覽 + ## 欄位格式約束`（通常 <100 行）取得全貌，不算違規。
 
@@ -52,9 +50,9 @@ Adapter 由 **`.claude/rules/sdd-workflow.md` 的 `Tracker Adapter:` 一行** �
 
 **規則：**
 
-- 整個對話中保持同一個 adapter，不可中途切換
+- 同一工作沿用記錄的 adapter；使用者要求切換時保留 ID／歷史對映
 - 切換 adapter 只需修改 `.claude/rules/sdd-workflow.md` 那一行
-- 若 adapter 對應的 MCP / 外部系統在流程中途斷線，通知使用者並停止，不可自動 fallback 到其他 adapter
+- MCP 不可用時可用同 adapter 支援的 CLI／API；仍無法存取才記錄缺口、暫停依賴該系統的部分，獨立工作可繼續，不自動改用別的 tracker
 
 ---
 
@@ -67,25 +65,23 @@ Adapter 由 **`.claude/rules/sdd-workflow.md` 的 `Tracker Adapter:` 一行** �
 
 ---
 
-## 核心操作介面（12 個必填）
+## 核心操作介面（10 個必填）
 
-所有 adapter 必須實作以下 12 個操作。具體呼叫方式見各 adapter 文件。
+所有 adapter 必須實作以下 10 個操作。具體呼叫方式見各 adapter 文件。
 不支援的必填操作 **不可刪章節**，須明示限制與替代方案。
 
 | 操作                                                 | 用途                                  | 用在哪些 skill                                                                                         |
 | ---------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `TRACKER.readItem(id)`                               | 讀 tracker item 基本資訊              | write-spec / fixbug / plan / task / implement / selfcheck / schedule                                   |
-| `TRACKER.findSpecComment(id, phase)`                 | 找 `[Spex] <phase>` 留言         | fixbug / plan / task / implement / selfcheck / pull-request / schedule                                 |
-| `TRACKER.addComment(id, content)`                    | 寫結構化留言                          | write-spec（可選）/ fixbug / plan / task / implement / selfcheck / pull-request / schedule（可選彙總） |
-| `TRACKER.ensureBranch(params)`                       | 確保符合命名規則的分支存在並 checkout | plan Phase 2（分類確認後）                                                                             |
-| `TRACKER.createChildTask(params)`                    | 建立子任務                            | plan（Tier 1 單張）/ task                                                                              |
-| `TRACKER.updateTaskState(id, state)`                 | 更新任務狀態                          | implement                                                                                              |
-| `TRACKER.getParentMetadata(id)`                      | 讀繼承欄位                            | plan（Tier 1）/ task                                                                                   |
+| `TRACKER.findSpecComment(id, phase)`                 | 找 `[Spex] <phase>` 留言         | fixbug / plan / task / implement / selfcheck / schedule                                 |
+| `TRACKER.addComment(id, content)`                    | 寫結構化留言                          | write-spec（可選）/ fixbug / plan / task / implement / selfcheck / schedule（可選彙總） |
+| `TRACKER.ensureBranch(params)`                       | 確保符合命名規則的分支存在並 checkout | plan（分類完成後）                                                                             |
+| `TRACKER.createChildTask(params)`                    | 建立子任務                            | plan（直接實作的單張）/ task                                                                              |
+| `TRACKER.updateTaskState(id, state)`                 | 更新任務狀態                          | implement / selfcheck                                                                                  |
+| `TRACKER.getParentMetadata(id)`                      | 讀繼承欄位                            | plan / task                                                                                   |
 | `TRACKER.getParentImages(id)`                        | 讀父任務描述內含圖片                  | task                                                                                                   |
-| `TRACKER.linkDependency(predecessorId, successorId)` | 建立子任務間的依賴連結（前置 → 後繼） | task Phase 5.4                                                                                         |
-| `TRACKER.getDependencies(parentId)`                  | 讀子任務清單與依賴邊                  | implement Phase 2 / schedule 對帳                                                                      |
-| `TRACKER.createPullRequest(params)`                  | 建立 PR 並連結 work item              | **僅 pull-request skill**（Phase 4）                                                                   |
-| `TRACKER.updatePullRequest(params)`                  | 更新既有 PR                           | pull-request（PR 已存在時）                                                                            |
+| `TRACKER.linkDependency(predecessorId, successorId)` | 建立子任務間的依賴連結（前置 → 後繼） | task                                                                                         |
+| `TRACKER.getDependencies(parentId)`                  | 讀子任務清單與依賴邊                  | implement / schedule 對帳                                                                      |
 
 ---
 
@@ -127,7 +123,7 @@ Adapter 由 **`.claude/rules/sdd-workflow.md` 的 `Tracker Adapter:` 一行** �
 輸入：
 
 - `id` — tracker item ID
-- `phase` — 階段名稱字串（`Spec` / `Fixbug` / `Plan` / `Task` / `Implement` / `Verify` / `PullRequest` / `Schedule`）
+- `phase` — 階段名稱字串（`Spec` / `Fixbug` / `Plan` / `Task` / `Implement` / `Verify` / `Schedule`）
 
 留言標題格式：`## [Spex] <phase> 完成`。
 例外：`Verify` 階段有兩種標題——`## [Spex] Verify 完成`（PASS）與 `## [Spex] Verify Fail`（FAIL），搜尋 `Verify` 時兩者皆須匹配（比對前綴 `## [Spex] Verify`）。
@@ -143,7 +139,7 @@ Adapter 由 **`.claude/rules/sdd-workflow.md` 的 `Tracker Adapter:` 一行** �
 }
 ```
 
-`found: false` → skill 應告知使用者上一個 Spex 階段尚未完成。
+`found: false` → 先檢查實際 tracker／工作樹並補做缺少的必要階段；只有缺少無法推導的資訊才詢問，不杜撰完成紀錄。
 
 ---
 
@@ -165,7 +161,7 @@ Adapter 由 **`.claude/rules/sdd-workflow.md` 的 `Tracker Adapter:` 一行** �
 }
 ```
 
-> **寫入前確認規則**：呼叫此操作前 skill 必須展示完整留言內容，等使用者明確輸入「確認」/「ok」/「yes」後才呼叫。
+> 已授權工作依「寫入與授權」直接執行並留存結果。
 
 ---
 
@@ -173,7 +169,7 @@ Adapter 由 **`.claude/rules/sdd-workflow.md` 的 `Tracker Adapter:` 一行** �
 
 **確保符合 SDD workflow 規則「分支生命週期」命名規則的本地分支存在並 checkout。直接執行，不需使用者確認。**
 
-> **分支前綴宣告（協定強制）**：每個 adapter 文件開頭必須明確宣告自己的「分支前綴」（例：ADO adapter → `ADO-`、Notion adapter → `NOTION-`）。下方步驟 1 的 `<分支前綴>` 即引用該宣告——**不得**假設固定為任何特定 tracker 的前綴，本協定本身不綁定任何一個 tracker。
+先沿用使用者指定或 tracker 已記錄的工作／排程分支。只有新建時才用 workflow 的 Branch Naming，預設 `codex/<adapter>-<id>-<summary>`；adapter 前綴只作識別，不覆蓋使用者指定的命名。
 
 輸入：
 
@@ -193,7 +189,7 @@ baseBranch 解析順序（未提供時）：
 
 行為：
 
-1. 組分支名：`<type>/<分支前綴>-<id>-<summary>`（`<分支前綴>` 由本文件開頭宣告，見上方提示）
+1. 先找本工作既有分支；無既有分支才組新名稱 `codex/<adapter>-<id>-<summary>`。批次沿用同一共用分支。
 2. `git branch --show-current` 已等於目標分支 → no-op，回 `created: false`
 3. 本地已存在但未 checkout → `git checkout <branch>`，回 `created: false`
 4. 本地不存在 → 從解析後的 baseBranch `git checkout -b <branch>`，回 `created: true`
@@ -239,7 +235,7 @@ params: {
 }
 ```
 
-> **寫入前確認規則**：同 `addComment`。
+> 已授權工作依「寫入與授權」直接執行並留存結果。
 
 ---
 
@@ -249,10 +245,10 @@ params: {
 
 輸入：
 
-- `id` — 子任務 ID
+- `id` — Task、Story 或 Epic 的 tracker ID；local child ID 另由呼叫端明確提供父卡上下文
 - `state` — 抽象狀態：`in-progress` / `done` / `removed`
 
-adapter 必須定義「抽象狀態 → 系統狀態字串」映射表。
+adapter 必須定義「抽象狀態 → 系統狀態字串」映射表。Task 相關驗證通過可 done；Story 實作完成仍 in-progress、記「待 Epic 驗收」並可解除後續實作依賴；Epic 集中驗收通過後才同步 Epic 與納入 Story 為 done。無 Epic 的獨立 Story 自行作為驗收單位。done 不代表已整合上線。
 
 輸出：
 
@@ -331,7 +327,7 @@ adapter 必須定義「抽象狀態 → 系統狀態字串」映射表。
 - 兩個 ID 必須屬於同一個父 item 的子任務；跨父卡連結 → `success: false` 並說明
 - 系統不支援原生依賴連結 → 仍實作此操作，於 adapter 文件標明限制，改以任務留言「依賴」欄為事實來源
 
-> **確認規則**：本操作**不單獨**走寫入前確認——由 `spex-task` Phase 5.4 一次展示全部依賴邊、取得單次確認後逐邊呼叫。
+> 已核准的依賴邊直接建立；回讀確認連結成功。
 
 ---
 
@@ -371,77 +367,9 @@ adapter 必須定義「抽象狀態 → 系統狀態字串」映射表。
 
 ---
 
-### `TRACKER.createPullRequest(params)`
-
-**建立 Pull Request 並連結 work item。**
-
-輸入：
-
-```
-params: {
-  sourceBranch: string,
-  targetBranch: string,
-  title: string,
-  description: string,                                      // Markdown
-  workItemIds: (string | number)[],
-  reviewers?: string[],
-  draft?: boolean,
-  autoComplete?: boolean,
-  deleteSourceBranch?: boolean,
-  transitionWorkItems?: boolean,
-  mergeStrategy?: 'squash' | 'rebase' | 'rebaseMerge' | 'noFastForward'
-}
-```
-
-輸出：
-
-```
-{
-  success: boolean,
-  pullRequestId: string | number | null,
-  url: string | null
-}
-```
-
-系統無 PR 概念（如 local-file）→ 仍實作但回 `{ success: false, ..., reason: "<說明>" }`，並在 adapter 文件標明 pull-request skill 不適用。
-
-> **PR 開立控管（協定強制）**：本操作**只允許由 `spex-pull-request` skill 呼叫**，且前置條件為最新一筆 Verify 留言為 PASS；`autoComplete` 一律為 `false`。其他 skill（含 implement / schedule）一律不得直接呼叫。詳見 SDD workflow 規則的「PR 開立控管」。
-
-> **寫入前確認規則**：同 `addComment`。
-
----
-
-### `TRACKER.updatePullRequest(params)`
-
-**更新既有 PR（title / description / reviewers / draft）。**
-
-輸入：
-
-```
-params: {
-  pullRequestId: string | number,
-  title?: string,
-  description?: string,
-  draft?: boolean,
-  reviewers?: string[]
-}
-```
-
-輸出：
-
-```
-{
-  success: boolean
-}
-```
-
-> **寫入前確認規則**：同 `addComment`。
-
----
-
 ## `TRACKER.recordBenchmark(params)`
 
-> **選用操作，非 12 必填核心**；spex 內建 skill 目前**沒有**呼叫者（原使用者 `spex-benchmark` 已移除），保留供專案自訂 skill 使用。adapter 可不實作（未實作 → 回 `success: false`，由呼叫方 fallback 為輸出 Markdown 供使用者手動貼上）。未列入頂部「Skills 引用 Adapter 規範」12 核心對照表；呼叫方以 grep SOP 直接讀 adapter 的同名章節。
+> **選用操作，非 10 必填核心**；內建 skill 沒有固定呼叫者，保留供專案自訂 skill 使用。adapter 可不實作（未實作 → 回 `success: false`，由呼叫方 fallback 為輸出 Markdown 供使用者手動貼上）。未列入頂部「Skills 引用 Adapter 規範」10 核心對照表；呼叫方以 rg SOP 直接讀 adapter 的同名章節。
 
 **把 SDD 基準 / 成本紀錄寫入「會渲染表格與可勾選 to-do」的載體（report 頁 / 文件內文 body）。** 與 `addComment` 的關鍵差異：目的地必須**渲染** Markdown 表格與 `- [ ]` to-do——只能保留純文字、不渲染的留言類載體**不可**用於本操作。
 
@@ -471,7 +399,7 @@ params: {
 - 目的地不存在 / 系統不支援渲染表格與 to-do → 回 `success: false` + `reason`，由呼叫方 fallback。
 - adapter 文件必須在對應章節說明 `target` 接受的形式與 `append` / `replace` 的實作方式。
 
-> **寫入前確認規則**：同 `addComment`（展示完整內容 → 使用者「確認」後才寫）。
+> 已授權工作依「寫入與授權」直接執行並留存結果。
 
 ---
 
@@ -492,24 +420,11 @@ skills 不會自動呼叫擴充操作；只有引用該 adapter 的 skill 才可
 
 ---
 
-## 寫入前確認規則（協定強制）
+## 寫入與授權
 
-任何呼叫以下操作的 skill **必須**先展示完整內容，等使用者明確確認（「確認」/「ok」/「yes」）後才呼叫：
+已授權範圍內的計畫、留言、子卡、依賴與狀態更新可直接執行；記錄實際結果並回讀 ID，不逐階段或逐筆要求確認。必要資訊缺失或新增 scope 才向使用者詢問。
 
-- `addComment`
-- `createChildTask`
-- `createPullRequest`
-- `updatePullRequest`
-- `recordBenchmark`（選用）
-
-各 adapter 在對應章節必須複述此規則並指明展示格式。
-
-**例外（避免重複展示消耗 token）：**
-
-1. 同一內容在前一個步驟已**完整展示**且其後未變更 → 確認步驟得引用先前展示（標明步驟編號，例：「內容同 Phase 7 展示，無變更」），不必重貼全文；內容有任何變更則必須重新完整展示。
-2. `linkDependency` 不單獨確認——由 task Phase 5.4 一次展示全部依賴邊、單次確認後逐邊呼叫。
-3. `createPullRequest` 屬一般流程（見 SDD workflow 規則「PR 開立控管」）：展示完整內容留痕即可，**不暫停等待輸入**。注意這只涵蓋「開立」——`updatePullRequest` 帶 `status: completed` 或任何 autoComplete 家族屬**合併**，一律禁止（見「PR 合併控管」）。
-4. schedule 批次執行期間：使用者對排程計畫的一次性確認，構成批次內各卡**階段性留言**（escalation 留言、Implement / Verify 留言等）的預先批准——內容仍逐筆展示，但不暫停等待輸入。
+master 合併與推送依 `.claude/rules/sdd-workflow.md` 的 Branch Policy：必須有使用者對該 Epic／批次的明確授權，既有授權有效。agent 自行填寫的狀態或旗標不構成授權。adapter 不額外安裝無條件工具封鎖。
 
 ---
 
@@ -519,7 +434,7 @@ skills 不會自動呼叫擴充操作；只有引用該 adapter 的 skill 才可
 
 常見差異：
 
-- 同系統內不同欄位格式可能不同（如 ADO 的 work item description = HTML，PR description = Markdown）
+- 同系統內不同欄位格式可能不同（如 ADO 的 work item description = HTML，title = Plain text）
 - 留言可能會被自動渲染（如 ADO Markdown → HTML）
 
 adapter 須以表格列出全部寫入欄位的格式，作為 skill 寫入時的參考。
@@ -542,16 +457,16 @@ adapter 須以表格列出全部寫入欄位的格式，作為 skill 寫入時�
 | Adapter    | ID 格式             | 範例                        |
 | ---------- | ------------------- | --------------------------- |
 | ADO        | 數字                | `1234`                      |
-| Local File | 使用者自行提供 slug | `feat-001`、`fix-login-bug` |
+| Local File | `<YYYYMMDD>-<slug>`，由實際目錄回讀 | `20260904-ragforge-chunk-annotations` |
 
-若 adapter 使用非數字 ID 且使用者未提供，skill 應請使用者指定唯一識別碼。
+ID 依 adapter 的實際回傳或 filesystem 回讀取得；建立時依已核准標題產生可讀 slug，不因未手填 ID 要求額外確認。
 
 ---
 
 ## 擴充新 Adapter
 
 1. 透過 `/create-adapter` 建立 `.claude/reference/adapters/<id>.md` 或 `.claude/reference/adapters/<id>/<id>.md`
-2. 實作全部 12 個必填 `TRACKER.*` 操作（不支援的 → 標限制、不刪章節）
+2. 實作全部 10 個必填 `TRACKER.*` 操作（不支援的 → 標限制、不刪章節）
 3. 視需要宣告擴充操作（系統前綴命名空間）
 4. 更新本文件「Adapter 文件清單」
 5. 各 skill **無需修改**，因為只使用抽象介面
