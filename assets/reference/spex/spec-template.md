@@ -67,7 +67,7 @@ AC-02: ...
 
 ## 預估開發點數（Story Points）
 
-> 由 spex-write-spec Phase 5.5 產出。採 MVP 複雜度單軸 Fibonacci `1 / 2 / 3 / 5 / 8 / 13 / 20`；
+> 由 spex-write-spec 產出。採 MVP 複雜度單軸 Fibonacci `1 / 2 / 3 / 5 / 8 / 13 / 20`；
 > 只衡量 MVP 實作複雜度，排除商業因素（失敗成本 / 風險 / 可逆性 / 優先級）；單卡上限 13（20 僅給 rollup 父卡）。
 > 估點僅供規劃與 token 成本估算，**不影響 selfcheck 的 PASS/FAIL 判定**。
 
@@ -82,7 +82,7 @@ AC-02: ...
 
 ---
 
-## 品質檢核清單（write-spec Phase 5 / plan 輸入檢核共用）
+## 品質檢核清單（write-spec / plan 輸入檢核共用）
 
 - [ ] 必填章節齊全（使用者角色 / Why / In Scope / Out of Scope / AC / 邊界條件 / 列舉完整性清單 / 驗收場景）
 - [ ] 每條 AC 二元可判定，無模糊詞，含格式或數值條件

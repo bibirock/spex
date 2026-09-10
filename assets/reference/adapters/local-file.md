@@ -1,6 +1,6 @@
 # Tracker Adapter — Local File（無 Tracker 模式）
 
-本文件為 Local File adapter，當 ADO MCP 不可用時作為 fallback。
+本文件為 Local File adapter，由 workflow 設定明確選用；不因其他 tracker 暫時斷線自動切換。
 所有 Spex 資料改以 Markdown 檔案寫入本機 `specs/` 目錄，可在無網路環境下完整執行。
 
 **分支前綴：** `LOCAL-`
@@ -22,9 +22,8 @@ specs/
       task.md                  ← [Spex] Task
       task-children.md         ← [Spex] Task 子卡對照
       implement.md             ← [Spex] Implement
-      escalation.md            ← implement F.5 escalation（兜底落點，見 addComment）
+      escalation.md            ← 實作待處理事項（兜底落點，見 addComment）
       verify.md                ← [Spex] Verify 完成 / Verify Fail（逐輪保留）
-      pull-request.md          ← [Spex] PullRequest（本模式存 PR 草稿）
       schedule.md              ← [Spex] Schedule 完成
       schedule-branch.md       ← [Spex] Schedule 批次分支（僅錨點卡有）
       tasks/
@@ -44,19 +43,22 @@ specs/
 
 | 方向 | 規則 |
 | --- | --- |
-| ID → 路徑 | 以 `^(\d{8})-(.+)$` 拆解：group 1 為日期層、group 2 為任務層 → `specs/<日期>/<slug>/` |
-| 路徑 → ID | 日期層目錄名 + `-` + 任務層目錄名 |
+| ID → 路徑 | 以 `^(\d{8})-(.+)$` 拆解：group 1 為日期層、group 2 為任務層 → 先查 `specs/<日期>/<slug>/`；不存在則 fallback 查 `specs/_archive/<日期>/<slug>/`（封存區，見「擴充操作 › `LOCALFILE.archiveDoneSpecs()`」）；兩者皆不存在才視為卡片不存在 |
+| 路徑 → ID | 日期層目錄名 + `-` + 任務層目錄名（`_archive/` 只是路徑上多出的根目錄層，不算日期層，組 ID 時忽略） |
 
-- **不需 glob**：任何操作拿到 ID 都能直接組出路徑再讀檔。
+- **不需 glob**：任何操作拿到 ID 都能直接組出路徑再讀檔（含上述兩步 fallback）。
 - **唯一性由結構保證**：同名 slug 落在不同日期不會撞名，不必額外靠人工規矩維護唯一性。
 - **slug 格式**：小寫英數字與連字號，不含空格與底線；不可以 8 位數字開頭（否則拆解會誤判日期層）。
-- ID 一律**由檔案系統回讀**（建立目錄後回讀實際目錄名），不可由模型推算——見 `sdd-workflow.md`「ID 事實鐵則」。
+- ID 從實際建立的目錄回讀，不用推算值代替 tracker 事實。
+- **封存 fallback 適用範圍**：本表的 ID → 路徑 fallback 是唯一事實來源。`readItem` / `findSpecComment` / `addComment` / `getParentMetadata` / `getParentImages` / `createChildTask` / `updateTaskState`（含其內部 `tasks/`、`tasks-state.json`、`attachments/` 等子路徑組裝）一律套用同一條規則解析任務資料夾根，不在各自章節重複宣告 fallback 邏輯——只需在「解析任務資料夾根」這一個共用步驟套用兩段式查找即可。`ensureBranch` 不受影響——分支名只吃 ID 字串，從不組路徑。
 
 ### ⛔ 日期層永不搬移
 
 日期是**建卡日**，資料夾建立後**不隨工作日變動**。同一張卡跨多天推進仍留在原資料夾。
 
 理由：ID 由路徑推導，搬資料夾等於換 ID——已建立的分支名（`feature/LOCAL-<id>-…`）、已寫入的留言引用、commit 訊息內的 ID 會全部失聯。要按「當前工作日」瀏覽請用 `git log` 或編輯器搜尋，不要動目錄。
+
+（封存操作搬的是「根目錄層」`specs/` → `specs/_archive/`，不是搬日期層或任務層——`<日期>` 與 `<slug>` 這兩個組成 ID 的字串本身不變，ID 字串因此不變，不牴觸本節規則。見「擴充操作 › `LOCALFILE.archiveDoneSpecs()`」。）
 
 ---
 
@@ -82,19 +84,11 @@ specs/
 
 - `seq`：該檔內單調遞增，從 1 起算。
 - `at`：ISO-8601 帶時區。
-- **不覆寫既有 entry**。任何階段都可能重跑（implement 重做後會再寫一次完成留言、selfcheck 逐輪寫 Verify），舊筆一律保留——`spex-schedule` Phase 4.A 對帳要驗留言鏈完整性，教訓閉環的 Capture 也以那些 Fail 為來源。
-- **與章戳鏈的關係**：`sdd-workflow.md`「章戳鏈」規定蓋章後不得潤飾留言本體。此格式在結構上保障了這件事——新一輪是**新 entry**，不動舊 entry，章所綁定的內容原文永久保留、隨時可重新計算雜湊比對。
+- **不覆寫既有 entry**。實作修復、驗收複核或格式修正都追加新筆，保留原始證據與判定供追溯。
 
 ### 讀取 SOP（取最新一筆）
 
-沿用 adapters/README「Agent 讀取 SOP」的 grep+offset 手法，不整檔載入：
-
-```
-grep -n '<!-- spex:entry' <檔案>          # 取前兩個行號
-Read(<檔案>, offset=<第 1 個行號>, limit=<第 2 個行號 - 第 1 個行號>)
-```
-
-只有一筆時省略 `limit` 讀到檔尾。
+先以 `rg -n '<!-- spex:entry' <檔案>` 列出 marker，解析所有數值 seq，讀取最大 seq 的完整 entry，不假定檔案物理順序。無 marker 的舊檔以既有標題區塊讀取，保留原文；追加第一筆新格式紀錄時不得刪掉歷史。
 
 ---
 
@@ -181,7 +175,7 @@ iterationPath: null
 
 slug 由使用者提供或自標題產生（小寫英數 + 連字號）；建目錄後**回讀實際目錄名**組出 ID 回傳，不預先推算。
 
-無工作量欄位的原生支援，write-spec Phase 5.5 的估點結果直接以 Markdown 章節保存（見 `spec-template.md` 的「預估開發點數」章節格式），不強行對應到 Front Matter。
+無工作量欄位的原生支援，write-spec 的估點結果直接以 Markdown 章節保存（見 `spec-template.md` 的「預估開發點數」章節格式），不強行對應到 Front Matter。
 
 ---
 
@@ -200,21 +194,12 @@ phase 對應檔案：
 | `"Task 子卡對照"`         | `task-children.md`  |
 | `"Implement"`             | `implement.md`      |
 | `"Verify"`                | `verify.md`（PASS 與 Fail 同檔逐輪 append，最新一筆即當前判定） |
-| `"PullRequest"`           | `pull-request.md`   |
 | `"Schedule"`              | `schedule.md`       |
 | `"Schedule 批次分支"`     | `schedule-branch.md` |
 
 **若檔案不存在：**
 
-- 回傳 `{ found: false, content: null }`
-- Skill 告知使用者：
-  ```
-  specs/<日期>/<slug>/<phase>.md 不存在，代表 <phase> 階段尚未完成。
-  請選擇：
-  (a) 我還沒做 <phase> → 我會回 `spex-<phase-lower>`
-  (b) <phase> 內容在其他位置 → 請貼上規格摘要
-  (c) 直接從 item.md 抽取重建 → 我會列出並請你確認
-  ```
+- 回傳 `{ found: false, content: null }`；呼叫端先檢查是否已有等效工作紀錄，再補做必要階段。缺少使用者才能提供的資訊才詢問。
 
 **若檔案存在：**
 
@@ -227,7 +212,7 @@ phase 對應檔案：
 
 把 `content` 以**新 entry prepend** 到對應階段檔（不覆寫既有內容）。
 
-**由 skill 傳入的 `content` 第一行決定寫入目標。** 比對規則：取第一行、剝除 `[tier-<n>]` 等後綴，再比對下表：
+**由 skill 傳入的 `content` 第一行決定寫入目標。** 比對規則：取第一行、剝除標題後可能附加的標記後綴，再比對下表：
 
 | 留言標題                                          | 寫入檔                |
 | ------------------------------------------------- | --------------------- |
@@ -238,37 +223,29 @@ phase 對應檔案：
 | `## [Spex] Task 子卡對照`                         | `task-children.md`    |
 | `## [Spex] Implement 完成`                        | `implement.md`        |
 | `## [Spex] Verify 完成` / `## [Spex] Verify Fail` | `verify.md`           |
-| `## [Spex] PullRequest 完成`                      | `pull-request.md`     |
 | `## [Spex] Schedule 完成`                         | `schedule.md`         |
 | `## [Spex] Schedule 批次分支`                     | `schedule-branch.md`  |
 | **上表皆不符**                                    | `escalation.md`（兜底） |
 
-**關於兜底落點**：`spex-implement` F.5 的 escalation 留言沒有固定的 `[Spex]` 標題，其他 skill 未來也可能新增留言型別。這些一律寫進 `escalation.md`（同樣 append-only），**不得靜默丟棄**——寫入後於回報中明列「已落 escalation.md（未匹配既有 phase）」，讓使用者知道有一筆非標準留言，必要時再回本 adapter 補對照。
+**關於兜底落點**：待處理事項或新的留言型別可能沒有固定的 `[Spex]` 標題。這些一律寫進 `escalation.md`（同樣 append-only），**不得靜默丟棄**——寫入後於回報中明列「已落 escalation.md（未匹配既有 phase）」，讓使用者知道有一筆非標準留言，必要時再回本 adapter 補對照。
 
 寫入步驟：
 
 1. 依「ID 規則」定位任務資料夾；不存在 → 回 `{ success: false, reason: "item not found" }`（不自動建卡）
-2. 目標檔不存在 → 以 `seq=1` 建檔；存在 → 以 `grep -m1 -oE 'seq=[0-9]+'` 取當前最大 `seq`，新 entry 用 `seq+1`
+2. 目標檔不存在 → 以 `seq=1` 建檔；存在 → 掃描全部 `spex:entry` marker 並取數值最大的 `seq`（不得假設第一個或最後一個 marker 必然最新），新 entry 用 `seq+1`
 3. 在**檔首** prepend：`<!-- spex:entry seq=<n> at=<ISO8601> -->`＋空行＋`content`＋空行，原有內容接在後面
 
-**寫入前確認（所有呼叫此操作的 skill 都必須遵守）：**
+格式、路徑或摘要錯誤直接追加修正版並指向被修正的 seq 與原因，不增加產品失敗次數。實際缺陷與驗收判定仍須真實記錄，不補造 PASS。
 
-```
-即將寫入 specs/<日期>/<slug>/<phase>.md（新增第 <n> 筆，不覆寫既有紀錄），
-請確認內容無誤後輸入「確認」；若需調整請說明修改內容，調整後再寫入。
-```
-
-收到明確確認（「確認」/「ok」/「yes」）後才執行寫入。
+已授權範圍內直接寫入並回報結果，不逐筆要求使用者確認。
 
 ---
 
 ## `TRACKER.ensureBranch(params)` → Local File 實作
 
-操作步驟與 ADO adapter 完全相同（純本地 `git` 操作，與 tracker 系統解耦），差別**只在分支前綴**——組分支名用本文件開頭宣告的 `LOCAL-`，不是 ADO 的 `ADO-`。實作細節見 [azure-devops/ado.md](./azure-devops/ado.md#trackerensurebranchparams)。
+依 [協定 ensureBranch](./README.md#trackerensurebranchparams) 執行純本地 git 操作。優先沿用使用者指定／tracker 已記錄的工作或批次分支，包括既有 `chore/schedule-*` 與 `feature/LOCAL-*`；新建才用 `codex/local-<id>-<summary>`。
 
-分支名形如 `feature/LOCAL-20260808-feat-login-add-oauth`。ID 含日期使分支名較長，屬預期；仍符合 `sdd-workflow.md`「Branch Naming」的 `<type>/<PREFIX>-<id>-<kebab-summary>` 格式。
-
-local-file 模式下若使用者未使用 git 倉庫，回 `{ success: false, reason: "not a git repository" }`，skill 應提示使用者初始化或停止流程。
+確實回報 git 錯誤；有其他未提交工作時可使用隔離 worktree，不擅自 reset、stash 或刪檔。push／整合由授權工作流程處理，不綁定另一個 skill。
 
 ---
 
@@ -341,7 +318,9 @@ state: todo
 2. 讀取 `specs/<日期>/<slug>/tasks/<id>.md`，修改 Front Matter 的 `state`
 3. 更新 `tasks-state.json` 中 `tasks.<id>.state`
 
-兩處必須同時更新；只改一處會讓 `getDependencies` 與子卡檔說法不一致。
+Task ID 必須連同父卡上下文定位，不能跨目錄猜測同名 T-001。兩處必須同步並回讀；只改一處會讓 `getDependencies` 與子卡檔說法不一致。
+
+`id` 若為完整 Story／Epic ID，依 ID 規則修改該 `item.md` 的 `state`。Story 實作完成保持 `in_progress`，在 implement.md 記「待 Epic 驗收」；Epic Verify PASS 後才把 Epic 與納入 Story 設 done。此狀態不表示已合併或上線。
 
 ---
 
@@ -388,7 +367,7 @@ state: todo
 3. **冪等**：同一筆邊已存在 → 直接回 `{ success: true }`，不重複加
 4. 寫回檔案，回 `{ success: true, reason: null }`
 
-此操作不單獨走寫入前確認——由 task Phase 5.4 一次展示全部邊、單次確認後逐邊呼叫。
+對已授權計畫中的依賴直接建立並回讀，不逐邊確認。
 
 ---
 
@@ -402,30 +381,90 @@ state: todo
 
 ---
 
-## `TRACKER.createPullRequest(params)` → Local File 實作
+## 擴充操作
 
-Local File 模式**無 PR 概念**，依協定仍實作但一律回：
+local-file adapter 特有、`TRACKER.*` 10 核心操作未涵蓋的能力，依 `adapters/README.md`「擴充操作」規範以系統前綴命名空間宣告。skills 不會自動呼叫；只有明確引用本章節的 skill／人工操作才會使用。
 
+### `LOCALFILE.archiveDoneSpecs()`（封存 done 卡片）
+
+**用途**：把 `item.md` Front Matter `state: done` 的任務資料夾，從 `specs/<日期>/<slug>/` 搬到 `specs/_archive/<日期>/<slug>/`——只搬「根目錄層」（`specs/` → `specs/_archive/`），`<日期>` 與 `<slug>` 兩段路徑原樣照搬，因此組出的 ID 字串 `<日期>-<slug>` 不變（見「ID 規則 › 封存 fallback」）。目的是讓 `specs/<日期>/` 主列表只留未完成任務，同時保留已完成卡片的完整歷史與可定位性。
+
+**呼叫時機**：僅在使用者要求封存，且該卡已完成驗收與本次要求的整合、無在途引用時使用。done 只代表驗收完成，不能據此自動搬移；批次腳本不檢查整合狀態，呼叫端先 dry-run 核對全部候選，必要時使用 --id 限定。
+
+**實作**：[`scripts/archive-done-specs.sh`](./scripts/archive-done-specs.sh)。
+
+```bash
+bash .claude/reference/adapters/scripts/archive-done-specs.sh --dry-run   # 先看清單，不搬
+bash .claude/reference/adapters/scripts/archive-done-specs.sh             # 正式搬（git mv，staged 但不 commit）
 ```
-{ success: false, pullRequestId: null, url: null, reason: "local-file adapter 不支援 Pull Request" }
+
+**目錄結構變化**：
+
+```diff
+ specs/
+   20260814/
+-    relax-query-retrieval/
+-      item.md
+-      spec.md
+   20260815/
+     feat-login/
+       ...
++  _archive/
++    20260814/
++      relax-query-retrieval/
++        item.md
++        spec.md
 ```
 
-`spex-pull-request` skill 收到此回應時：告知使用者本模式無法開 PR，改以 `pull-request.md` 留存「PR 內容草稿」（title / description / work items），由使用者自行決定後續（例如改用 ADO adapter 或手動處理）。
+**演算法**：
 
----
+1. 掃描 `specs/*/`，排除 `_archive/` 本身；只認資料夾名符合 `^\d{8}$` 的日期層（其餘一律略過，不報錯——避免誤動使用者自建的雜項目錄）
+2. 每個 `specs/<日期>/<slug>/item.md`：讀 Front Matter `state:` 值（沿用 grep+offset 慣例，非真 YAML parser）
+3. 依判定分流（見下方狀態表）
+4. 命中「可封存」→ `mkdir -p specs/_archive/<日期>/` 後 `git mv specs/<日期>/<slug> specs/_archive/<日期>/<slug>`（用 `git mv` 而非 `mv` + `git add`/`git rm`，保留 blame / `git log --follow` 歷史）
+5. 每筆印一行報告；退出碼一律 0（報告型工具，非硬 gate）
 
-## `TRACKER.updatePullRequest(params)` → Local File 實作
+**狀態表**：
 
-同 `createPullRequest`：不支援，一律回 `{ success: false, reason: "local-file adapter 不支援 Pull Request" }`。
+| 判定 | 條件 | 行為 |
+| --- | --- | --- |
+| `ARCHIVED` | `state: done` 且目的地不存在且無未提交變更 | 執行 `git mv`（staged，不自動 commit） |
+| `SKIP not-done` | `state` 非 `done`（含空值） | 略過 |
+| `SKIP already-archived` | `specs/_archive/<日期>/<slug>/` 已存在 | 略過（冪等的來源） |
+| `SKIP dirty-worktree` | 該任務資料夾內 `git status --porcelain` 非空 | 略過，不強搬 |
+| `SKIP no-item-md` | 找不到 `item.md` | 略過（非標準任務資料夾） |
+
+**未提交變更（dirty-worktree）處理**：搬移前一律先跑 `git status --porcelain -- specs/<日期>/<slug>`；只要該資料夾內有任何未追蹤或未提交的變更，一律跳過、不強制搬移——直接搬移會讓「這批變更是搬移前還是搬移後產生」變得不可考，也可能讓使用者弄丟尚未 commit 內容的位置。要封存該卡，請先自行 commit 或 stash 該資料夾內的變更後重跑。
+
+**不自動 commit**：腳本以 git mv stage 搬移，呼叫端核對清單後依任務授權提交。
+
+**在途引用**：封存前檢查其他分支／worktree 是否仍會修改或引用該路徑，避免 rename/modify 衝突；僅本工作樹乾淨不能證明其他工作已整合。
+
+### `LOCALFILE.archiveItem(id)`（單卡變體，選用）
+
+同一支腳本、`--id` 旗標：
+
+```bash
+bash .claude/reference/adapters/scripts/archive-done-specs.sh --id=20260814-relax-query-retrieval
+```
+
+只處理指定 ID 對應的單一任務資料夾；仍套用上表全部判定（非 `done` 一律 skip，**不會**因為指定了 `--id` 就強制封存未完成的卡）。用途：已核對驗收、整合及在途引用後，只封存指定卡而不觸發全庫搬移。**非必要操作**——目前沒有任何 skill 會呼叫它，`archiveDoneSpecs()` 全掃描已能滿足「一次性遷移＋日後重跑」的完整需求；保留只因實作成本極低（共用同一支腳本）。
+
+#### 注意事項
+
+- 只信任 `item.md` 自己的 `state` 欄位，不檢查子任務（`tasks/*.md`）是否全部 `done`——與 `readItem` 的既有行為一致，父卡 `state` 是唯一事實來源。
+- 腳本可在 repo 內任何目錄執行，會自動 `cd` 到 `git rev-parse --show-toplevel`；不在 git 工作樹內或找不到 `specs/` 一律印錯誤並以非 0 結束（唯二的非 0 退出情境，其餘一律 0）。
+- 不引入 YAML parser——沿用本文件其餘章節的 grep+offset 讀法。
 
 ---
 
 ## Local File 特有注意事項
 
 1. **日期層永不搬移** — 見上方「ID 規則」。搬資料夾等於換 ID，會讓分支名、留言引用、commit 內的 ID 全部失聯。
-2. **留言 append-only，不覆寫** — 任何階段都可能重跑；舊筆是對帳（`spex-schedule` Phase 4.A 留言鏈完整性）與教訓 Capture 的來源，也是章戳內容綁定得以重驗的前提。
+2. **留言 append-only，不覆寫** — 保留實作、修復與驗收原始紀錄，當前狀態依最新有效證據判斷。
 3. **未匹配的留言落 `escalation.md`，不得靜默丟棄** — 並於回報中明列，讓使用者有機會回本 adapter 補對照。
 4. **slug 不可以 8 位數字開頭** — 會讓 `^(\d{8})-(.+)$` 誤判日期層。
 5. **無網路環境** — Local File Adapter 完全不需要網路。適合離線開發或 ADO 連線不穩的情況。
 6. **版本控制** — `specs/` 目錄建議納入 `git` 版本控制，方便團隊分享 Spex 產出。
 7. **迭代路徑的替代** — 無 ADO 時 `iterationPath` 無意義，可填入 Sprint 名稱或留空。
+8. **封存（`specs/_archive/`）** — 已核對驗收、整合與在途引用的 `state: done` 卡片可用 `LOCALFILE.archiveDoneSpecs()`（[`scripts/archive-done-specs.sh`](./scripts/archive-done-specs.sh)）搬到 `specs/_archive/<日期>/<slug>/`。只搬根目錄層，日期層與任務層字串不變，ID 因此不變——不牴觸「日期層永不搬移」。搬移用 `git mv` 保留歷史，且只在 `git status --porcelain` 乾淨時才搬；掃描時 `_archive/` 本身會被排除，不會被誤判成新的日期層。詳見「ID 規則 › 封存 fallback」與「擴充操作 › `LOCALFILE.archiveDoneSpecs()`」。
